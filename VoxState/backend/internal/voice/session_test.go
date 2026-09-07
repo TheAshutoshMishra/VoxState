@@ -60,9 +60,10 @@ func (f *fakeTTS) Calls() []string {
 // makes these tests flaky (see session.go's doc comment on
 // handleUtterance for why it's a directly-testable seam).
 type fakeTransport struct {
-	mu     sync.Mutex
-	sent   [][]int16
-	frames chan AudioFrame
+	mu        sync.Mutex
+	sent      [][]int16
+	stopCalls int
+	frames    chan AudioFrame
 }
 
 func newFakeTransport() *fakeTransport {
@@ -80,6 +81,25 @@ func (f *fakeTransport) SentCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.sent)
+}
+
+// StopAudio records that it was called rather than actually discarding
+// anything from sent — fakeTransport.Send already returns "delivered"
+// synchronously (unlike the real livekit.Transport, which only queues for
+// async playback), so there is nothing in-flight for this fake to clear.
+// Tests assert on StopCalls() to verify the interruption boundary invokes
+// this hook, independent of what a real Transport does with it.
+func (f *fakeTransport) StopAudio() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopCalls++
+	return nil
+}
+
+func (f *fakeTransport) StopCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopCalls
 }
 
 func (f *fakeTransport) Frames() <-chan AudioFrame { return f.frames }

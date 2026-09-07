@@ -140,9 +140,12 @@ narrow interface a real LLM/reasoning provider will implement in a later
 milestone; introducing it now would be premature given M5's scope. As of
 M6, `internal/voice.Session` feeds this same `Agent.Run` the transcript
 text Deepgram produced — the Agent itself is unchanged, unaware it's now
-reachable from voice as well as HTTP. The Agent does not yet react to
-interruption signals — that remains an M7 concern; M6 only gets it talked
-to and heard, not interrupted.
+reachable from voice as well as HTTP. M7 adds interruption handling
+entirely in `internal/voice`, one layer above the Agent: `Agent.Run`
+itself is not modified — it already stops and cancels its task the
+moment its `ctx` is cancelled (M5), so `voice.VoiceSession` cancelling a
+turn's context on barge-in is enough to reach the Agent through the exact
+same, unchanged path.
 
 ### Voice transport — LiveKit
 **Implemented (M6)** in `internal/voice/livekit`. LiveKit's "Agents"
@@ -164,7 +167,16 @@ its Agents framework would for Python/Node — `internal/voice`'s own
 `segmenter.go` does simple energy/silence-threshold utterance
 segmentation instead (see the Tool Orchestrator/Agent-adjacent "Voice
 session" flow below). This is a known, hand-tuned, non-production-grade
-heuristic, not adaptive VAD.
+heuristic, not adaptive VAD. M7's barge-in detection reuses this same
+heuristic (`segmenter.loud`) rather than a separate "is this an
+interruption" signal — there is still only one VAD implementation in the
+codebase. **Implemented (M7):** `voice.Transport` gained one new method,
+`StopAudio`, alongside `Send`/`Frames`/`Close` — `livekit.Transport`
+implements it as `lkmedia.PCMLocalTrack.ClearQueue()`, the same call the
+SDK's own mute handling uses internally, because `Send`/`WriteSample`
+only enqueue samples into a buffer a background goroutine paces out over
+real time; cancelling a turn's context after `Send` has already returned
+does nothing on its own to audio already sitting in that buffer.
 
 ### STT — Deepgram
 **Implemented (M6)** in `internal/voice/deepgram`, using Deepgram's
@@ -215,7 +227,7 @@ Every step above also emits an Event to the Event Store.
 
 ## 5. Voice flow
 
-**Implemented (M6)**, minus interruption handling (M7):
+**Implemented (M6, interruption added in M7):**
 
 ```
 Mic audio → LiveKit room → voice.Transport (raw participant, pkg/media)
@@ -227,12 +239,10 @@ Mic audio → LiveKit room → voice.Transport (raw participant, pkg/media)
     → PCM audio → voice.Transport.Send → LiveKit room → user's speakers
 ```
 
-LiveKit is also the eventual source of interruption signals (user starts
-speaking while agent audio is still playing) — M6 does not react to this
-yet: `internal/voice.Session` simply drops inbound audio while a response
-is being synthesized/sent, rather than queuing or reacting to it. M7 is
-what turns "user started talking over the agent" into cancellation +
-replanning.
+Every instruction is a logical **turn** (M7): `VoiceSession.Run`'s frame
+loop keeps consuming inbound audio while a turn is being processed or
+spoken, instead of blocking on it, so it can detect the user talking over
+an active turn. See §7 below for the interruption flow this enables.
 
 ## 6. State flow
 
@@ -259,15 +269,39 @@ Agent requests diagnostic → Task Engine stamps task with StateVersion(N)
     → on completion, result is tagged with StateVersion(N)
 ```
 
-**Interruption flow**
+**Interruption flow** (**implemented, M7**)
 ```
-User speaks over agent audio → LiveKit signals interruption
-    → API layer notifies Agent → Agent requests cancellation of all
-      in-flight tasks tied to the current conversation turn
-    → Task Engine flips task status to Cancelled, signals Tool Orchestrator
-    → UserInterrupted event recorded
-    → Agent takes the new user input into account and replans
+User speaks over an active turn (loud inbound frame while
+voice.VoiceSession has a current turn)
+    → VoiceSession.interrupt: cancel that turn's context
+        → propagates into agent.Agent.Run/tasks.Store exactly like any
+          other ctx cancellation already did in M6 — the same single
+          cancellation path, not a second mechanism
+        → Task Engine flips the bound task's status to Cancelled (or, if
+          the task had already completed, the CANCELLED transition is a
+          documented no-op — see §7's stale-result flow: the Policy layer
+          still rejects that result on version mismatch regardless)
+    → Transport.StopAudio discards any outbound audio already queued for
+      playback, since Transport.Send only enqueues for asynchronous,
+      real-time-paced delivery and cancelling a context after Send
+      returns does not by itself stop already-queued audio
+    → UserInterrupted + ResponseInvalidated events recorded
+    → the same inbound frame that triggered the interruption begins
+      accumulating the next utterance, which becomes the new, active turn
+    → Agent processes the new instruction normally (agent.Run is
+      unmodified by M7); the interrupted turn's result, even if it
+      eventually completes and is policy-accepted, is never spoken —
+      voice.Session.handleUtterance checks the turn's own ctx.Err()
+      immediately before every user-visible step (TTS synthesis,
+      Transport.Send), not just once
 ```
+
+This reuses M3's cancellation mechanism and M4's policy check unchanged —
+voice does not duplicate `result.BoundVersion == machine.CurrentVersion`
+anywhere; that comparison stays exclusively inside `policy.Evaluator`. The
+turn-ownership check (`ctx.Err()`) is a separate, voice-layer-only concern:
+whether a turn has been superseded by a newer one, not whether a state
+version is stale.
 
 **Stale-result flow (concrete walkthrough)**
 ```

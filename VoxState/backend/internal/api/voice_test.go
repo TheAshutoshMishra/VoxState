@@ -40,6 +40,7 @@ type fakeTransport struct {
 }
 
 func (f *fakeTransport) Send(context.Context, []int16, int) error { return nil }
+func (f *fakeTransport) StopAudio() error                         { return nil }
 func (f *fakeTransport) Frames() <-chan voice.AudioFrame          { return f.frames }
 func (f *fakeTransport) Close() error                             { close(f.frames); return nil }
 

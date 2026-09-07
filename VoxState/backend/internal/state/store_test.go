@@ -387,3 +387,28 @@ func TestChangeState_ConcurrentUpdatesProduceUniqueSequentialVersions(t *testing
 		seen[st.Version] = true
 	}
 }
+
+func TestListMachines(t *testing.T) {
+	s := NewStore()
+
+	if got := s.ListMachines(); len(got) != 0 {
+		t.Fatalf("ListMachines() on empty store = %v, want empty", got)
+	}
+
+	first, _, _, err := s.CreateMachine(CreateMachineInput{Name: "Machine 17"})
+	if err != nil {
+		t.Fatalf("CreateMachine() error = %v", err)
+	}
+	second, _, _, err := s.CreateMachine(CreateMachineInput{Name: "Machine 18"})
+	if err != nil {
+		t.Fatalf("CreateMachine() error = %v", err)
+	}
+
+	got := s.ListMachines()
+	if len(got) != 2 {
+		t.Fatalf("len(ListMachines()) = %d, want 2", len(got))
+	}
+	if got[0].ID != first.ID || got[1].ID != second.ID {
+		t.Errorf("ListMachines() order = [%s, %s], want creation order [%s, %s]", got[0].ID, got[1].ID, first.ID, second.ID)
+	}
+}

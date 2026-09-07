@@ -109,6 +109,19 @@ func (t *Transport) Send(_ context.Context, audio []int16, sampleRateHz int) err
 	return t.localTrack.WriteSample(media.PCM16Sample(audio))
 }
 
+// StopAudio discards any samples already queued on the local track but
+// not yet drained onto the wire. lkmedia.PCMLocalTrack.WriteSample only
+// enqueues into an internal buffer that a background goroutine paces out
+// over real time (see its own doc comments) — cancelling a turn's context
+// after Send has returned does nothing to audio already sitting in that
+// buffer, so ClearQueue is the actual mechanism that stops it from
+// continuing to play. This is the same method setMuted uses internally
+// when a participant is muted mid-stream.
+func (t *Transport) StopAudio() error {
+	t.localTrack.ClearQueue()
+	return nil
+}
+
 func (t *Transport) Frames() <-chan voice.AudioFrame {
 	return t.frames
 }

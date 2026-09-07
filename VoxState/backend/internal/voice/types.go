@@ -16,10 +16,12 @@
 // constructs the concrete implementations and hands them to this
 // package's types as interface values.
 //
-// M6 does not implement interruption/barge-in handling (detecting the
-// user speaking over an in-progress response, cancelling in-flight work,
-// replanning) — that is M7's job, per docs/ROADMAP.md. See session.go's
-// doc comment for the specific behavior M6 has instead.
+// M7 adds interruption/barge-in handling on top of this: detecting the
+// user speaking over an in-progress turn, cancelling its context (which
+// propagates into agent.Run/tasks.Store exactly as any other ctx
+// cancellation already did in M6), and discarding any audio the
+// interrupted turn already queued via Transport.StopAudio. See
+// session.go's doc comment for the turn lifecycle this introduces.
 package voice
 
 import "context"
@@ -58,6 +60,17 @@ type TTS interface {
 type Transport interface {
 	// Send publishes PCM16 mono audio at sampleRateHz.
 	Send(ctx context.Context, audio []int16, sampleRateHz int) error
+	// StopAudio discards any outbound audio already handed to Send that
+	// has not yet reached the wire. It exists because Send only enqueues
+	// audio for asynchronous, real-time-paced delivery (see
+	// voice/livekit's Transport, which hands samples to
+	// lkmedia.PCMLocalTrack's internal buffer and drains it on a timer) —
+	// cancelling a turn's context after Send has already returned does
+	// nothing on its own to stop that queued audio from continuing to
+	// play out. StopAudio is the M7 hook a VoiceSession calls on
+	// interruption to close that gap. It is a no-op, not an error, if
+	// nothing is queued.
+	StopAudio() error
 	// Frames returns a channel of inbound PCM16 frames as they arrive.
 	// Closed when the transport disconnects.
 	Frames() <-chan AudioFrame

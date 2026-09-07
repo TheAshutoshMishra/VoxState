@@ -92,6 +92,16 @@ func (s *segmenter) feed(frame AudioFrame, frameDur time.Duration) ([]int16, boo
 	return nil, false
 }
 
+// loud reports whether frame's energy alone would count as speech,
+// without mutating segmenter state. VoiceSession.handleFrame (session.go)
+// uses this to decide whether an inbound frame arriving while a turn is
+// active is a barge-in signal, before ever handing the frame to feed —
+// feed is only ever called by the single Run-loop goroutine that owns
+// s.buf, so this stays a plain query with no locking, same as feed.
+func (s *segmenter) loud(frame AudioFrame) bool {
+	return rms(frame.Samples) > s.cfg.EnergyThreshold
+}
+
 func (s *segmenter) emit() []int16 {
 	out := s.buf
 	s.buf = nil

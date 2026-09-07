@@ -1,10 +1,10 @@
 # VoxState
 
-> **Status: in development — Milestone 6 (Realtime Voice Integration) is
-> complete.** M0–M6 are implemented; see `docs/ROADMAP.md` and
+> **Status: in development — Milestone 7 (Voice Interruption & Recovery) is
+> complete.** M0–M7 are implemented; see `docs/ROADMAP.md` and
 > `CLAUDE.md`'s "Current status" section for exactly what that does and
-> does not cover. Interruption handling (M7), the frontend (M8), and a
-> real LLM provider are not built yet.
+> does not cover. The frontend (M8) and a real LLM provider are not built
+> yet.
 
 A realtime voice agent that stays consistent with the latest verified world
 state — even when the user interrupts, external events change that state
@@ -46,10 +46,16 @@ Industrial machine maintenance. Example flow:
 2. Agent starts diagnostic tools against the machine's current state.
 3. Machine state changes mid-diagnostic (e.g. a technician report arrives).
 4. User interrupts: "Stop. Maintenance replaced the motor."
-5. In-flight diagnostics are cancelled; the outdated result is rejected if
-   it arrives anyway.
-6. Agent replans against the current state.
-7. Rime speaks a response that reflects only the current, verified state.
+5. The in-progress voice turn is invalidated: queued/in-flight response
+   audio is stopped and the diagnostic task bound to the superseded turn
+   is cancelled through the same task engine used everywhere else.
+6. If the cancelled task's result arrives anyway, it's still rejected by
+   the unchanged M4 policy check — interruption doesn't add a second,
+   parallel staleness check.
+7. The new instruction becomes the active turn; the agent replans against
+   current state.
+8. Rime speaks a response that reflects only the current, verified state
+   — never anything from the interrupted turn.
 
 ## High-level architecture
 
@@ -87,13 +93,18 @@ Event catalog: `docs/EVENT_MODEL.md`.
 
 ## Current milestone
 
-**M6 — Realtime Voice Integration.** `internal/voice` glues LiveKit
-(transport), Deepgram (STT), and Rime (TTS) onto the M5 `agent.Agent`
-loop unchanged: speech in → transcript → `Agent.Run` → policy-gated
-result → response text → speech out. A rejected (stale) result's payload
-still never reaches speech — see `voice.TextResponse`. Interruption
-handling (talking over an in-progress response) is not implemented yet —
-inbound audio is simply dropped while the agent is speaking; that's M7.
+**M7 — Voice Interruption & Recovery.** `internal/voice.VoiceSession` now
+recognizes every instruction as a logical **turn**: Run's frame loop keeps
+consuming inbound audio while a turn is being processed/spoken, and a
+loud frame arriving while a turn is active is treated as a barge-in — the
+active turn's context is cancelled (propagating into `agent.Run`/
+`tasks.Store` exactly like any other cancellation already did in M6),
+`Transport.StopAudio` discards any audio already queued for playback, and
+the same frame starts accumulating the interrupting utterance as the new,
+authoritative turn. See `docs/ARCHITECTURE.md`'s voice-flow section and
+`CLAUDE.md`'s M7 design notes for the full turn lifecycle and the races
+this closes. Talking over the agent now reliably cuts it off instead of
+being silently dropped.
 
 See `docs/ROADMAP.md` for the full milestone breakdown (M0–M9) and
 `CLAUDE.md` for exact per-milestone status and design notes.
@@ -103,12 +114,13 @@ See `docs/ROADMAP.md` for the full milestone breakdown (M0–M9) and
 A live voice conversation with the agent about a simulated machine fleet:
 the user asks for a diagnosis, the agent starts work, the demo operator
 triggers a state change (via the frontend or a script) mid-diagnostic, and
-the user interrupts. The frontend timeline will show the state version bump,
-the task cancellation, and the rejected stale result in realtime, alongside
-the agent's spoken (Rime) response reflecting only current state.
-Interruption reaction (the "user interrupts" step) is M7 — as of M6, the
-voice conversation and the stale-result-never-spoken guarantee are both
-demonstrable, but talking over the agent doesn't yet trigger cancellation.
+the user interrupts. The frontend timeline (M8, not built yet) will show
+the state version bump, the task cancellation, and the rejected stale
+result in realtime, alongside the agent's spoken (Rime) response
+reflecting only current state. As of M7, every piece of that flow except
+the frontend visualization is demonstrable end to end: interrupting the
+agent mid-response now cancels its in-flight work and cuts off its audio
+immediately.
 
 ## Project structure
 

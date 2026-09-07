@@ -19,7 +19,8 @@ of truth for how components relate, not this file.
 
 ## Current status
 
-**M6 — Realtime Voice Integration is complete** (M0–M5 also complete).
+**M7 — Voice Interruption & Recovery is complete** (M0–M6 also complete).
+**M8 = NOT STARTED, M9 = NOT STARTED.**
 `internal/agent` orchestrates the full tool-calling loop end to end: read
 current machine state → `Planner` selects a tool → `internal/tasks.CreateTask`
 binds a task to that current version → `internal/tools.Tool.Run`
@@ -66,16 +67,85 @@ notes" below for the full guarantee and its limitations.
 task silently created), task rebinding (still forbidden — `BoundVersion`
 is copied through unchanged everywhere), or a real LLM provider.
 
-**M6 does NOT implement:** interruption/barge-in handling (`voice.Session`
-simply drops inbound audio while a response is being synthesized/sent —
-no cancellation, no replanning; that is M7's job), a frontend, database/
-event persistence for `VoiceSession`s (in-memory only, same as every
-other engine), or production-grade voice activity detection (`segmenter.go`
-is a fixed, hand-tuned energy/silence heuristic, not adaptive VAD).
+**M6 does NOT implement:** interruption/barge-in handling — that gap is
+exactly what M7 fills, see below. M6 still stands as-is otherwise: a
+frontend, database/event persistence for `VoiceSession`s (in-memory only,
+same as every other engine), and production-grade voice activity
+detection (`segmenter.go` is a fixed, hand-tuned energy/silence heuristic,
+not adaptive VAD) all remain unbuilt.
 
-`tools`/`agent`/`voice` are now implemented; there is still no database and
-no frontend. See `docs/ROADMAP.md` for what M7+ adds and explicitly does
-not add yet.
+**M7 adds interruption/barge-in handling entirely inside `internal/voice`,
+with zero changes to `agent`, `tasks`, or `policy`.** Every instruction is
+now a logical **turn** (`voice`'s unexported `turn` type: an id plus the
+`context.CancelFunc` for that turn's own child context, derived from
+whatever ctx `Session.Run` was given). `Session.Run`'s frame loop still
+does segmentation on a single goroutine, but each complete utterance now
+starts its turn on its own goroutine (`startTurn`) instead of blocking the
+loop until that turn finishes — this is the actual mechanism that lets the
+loop keep consuming inbound audio, and therefore detect a barge-in, while
+a turn is still being processed or spoken. `handleFrame` treats a loud
+inbound frame arriving while a turn is active as an interruption signal:
+it calls `interrupt`, which cancels that turn's context (propagating into
+`agent.Agent.Run`/`tasks.Store` through the *exact* cancellation path M5/M6
+already had — `Agent.Run` was not touched), calls the new
+`Transport.StopAudio` method to discard anything already queued for
+playback, and logs/records `UserInterrupted` + `ResponseInvalidated`
+(`internal/events`, both newly added, both previously reserved in
+`docs/EVENT_MODEL.md`). The same frame that triggered the interruption is
+then fed into the segmenter, so it becomes the first frame of the new,
+authoritative turn — no separate "was this an interruption or a new
+instruction" branch exists; a barge-in *is* the start of the next turn.
+
+**Why `Transport` needed a new method.** `Send` only enqueues PCM samples
+into `lkmedia.PCMLocalTrack`'s internal buffer — a background goroutine in
+the LiveKit SDK paces them out over real time — so cancelling a turn's
+context after `Send` has already returned does nothing on its own to audio
+already sitting in that buffer. `StopAudio` (implemented in
+`voice/livekit` as `PCMLocalTrack.ClearQueue()`, the same call the SDK's
+own mute handling uses internally) is the actual mechanism that stops
+already-queued audio from continuing to play.
+
+**M7 does not duplicate M4's staleness check.** `handleUtterance` checks
+`ctx.Err()` immediately before every user-visible side effect (TTS
+synthesis, `Transport.Send`) — not just once — because a turn can be
+interrupted at any point while it runs, and `agent.Run` can return a nil
+error with `ctx` already cancelled if its own internal `runTool` select
+happened to pick the tool's result over `ctx.Done()` at the same instant
+(see `TestRace_InterruptVsToolCompletion`'s doc comment in
+`internal/voice/interruption_test.go`). This is a **turn-ownership**
+check, unrelated to `result.BoundVersion == machine.CurrentVersion`, which
+still lives exclusively in `policy.Evaluator` — voice has no version
+comparison anywhere in it, exactly as before M7.
+
+**A true simultaneous tie between "the tool finished" and "the user
+interrupted" is not guaranteed to resolve in the interrupt's favor** —
+`agent.Run`'s own `runTool` select (M5, unchanged) can legitimately pick
+either ready case, the same "whichever wins the lock/select first wins"
+principle `tasks.Store`'s own `CancelTask`-vs-`finishTask` race already
+established (see that race's own doc comment and
+`TestCompletionVsCancellationRace`). Guaranteeing the interrupt always
+wins a true tie would require holding a session-wide lock across TTS
+synthesis (a real HTTP call for the Rime client), which would stop
+`Session.Run`'s frame loop from ever detecting a barge-in while synthesis
+is in flight — a strictly worse trade-off than accepting a well-defined,
+race-free tie. What M7 does guarantee, and tests with real synchronization
+(not a coin-flip): once an interruption has landed *before* a turn
+reaches a user-visible step, that turn never speaks — see
+`TestFullDuplex_InterruptionThenNewInstructionBecomesAuthoritative` and
+`TestRace_InterruptVsTTSGeneration`/`TestRace_InterruptVsAudioDelivery` in
+`internal/voice/interruption_test.go`.
+
+**M7 does NOT implement:** a frontend (still M8), database/event
+persistence (`UserInterrupted`/`ResponseInvalidated` are logged via
+`*slog.Logger`, same as every other in-memory-only event in this codebase
+today — there is still no event store), production-grade VAD (barge-in
+detection reuses `segmenter.go`'s existing fixed energy/silence
+heuristic — `segmenter.loud` — not a new/smarter signal), or an LLM
+provider.
+
+`tools`/`agent`/`voice` (including interruption) are now implemented;
+there is still no database and no frontend. See `docs/ROADMAP.md` for
+what M8/M9 add and explicitly do not add yet.
 
 Run it locally: `cd backend && go run ./cmd/server` (defaults to
 `0.0.0.0:8080`; override with `APP_ENV`, `HTTP_HOST`, `HTTP_PORT`, plus the
@@ -368,15 +438,12 @@ documented in `docs/POLICY.md` — this is the condensed version.
   buffer — and REST keeps `voice/deepgram` symmetric with `voice/rime`'s
   own one-call-per-response REST TTS pattern, both directly testable
   against `httptest.Server` with no live network call.
-- **Inbound audio during an in-progress response is dropped, not
-  queued.** `Session` tracks a single `speaking bool` (its `Run` loop is
-  single-goroutine per session, so no mutex is needed) and simply does
-  not feed the segmenter while true. This is a deliberate scope
-  boundary, not an oversight: reacting to "the user started talking while
-  the agent was still speaking" — cancelling the in-flight response,
-  replanning — is exactly M7's job. Whoever implements M7 should look
-  here first; the check is intentionally the simplest thing that could
-  possibly leave a clean seam for interruption handling to attach to.
+- **Inbound audio during an in-progress response was dropped, not
+  queued, in M6** — `Session` tracked a single `speaking bool` and simply
+  did not feed the segmenter while true. **M7 replaced this**: see the
+  `voice.VoiceSession` (M7) design notes below for what an in-progress
+  turn's inbound audio now does instead (barge-in detection, not
+  dropping).
 - **Rime has no official SDK in any language except Python framework
   plugins** (confirmed by inspecting the `rimelabs` GitHub org — its only
   Go artifact is `rime-cli`, a release download tool, not a client
@@ -411,6 +478,58 @@ documented in `docs/POLICY.md` — this is the condensed version.
   `internal/voice`'s own core logic and its `rime`/`deepgram` subpackages,
   builds and tests cleanly in isolation
   (`go build $(go list ./... | grep -v /voice/livekit)`).
+
+**`voice.VoiceSession` (M7) design notes:**
+- **`speaking bool` is gone; a mutex-guarded `current *turn` replaced
+  it.** M6's single-goroutine session could get away with a plain bool
+  because `Run`'s loop called `handleUtterance` synchronously and blocked
+  on it. M7 needed the loop to keep consuming frames *while* a turn is
+  still being processed/spoken (otherwise a barge-in could never be
+  detected), so each utterance now starts its turn on its own goroutine
+  (`startTurn`) — `current` is therefore read/written from both `Run`'s
+  goroutine and each turn's own goroutine, and needs `VoiceSession.mu` to
+  stay race-free (`go test -race` covers this — see
+  `TestRace_InterruptVsToolCompletion`). `segmenter` itself is still
+  touched only by `Run`'s single goroutine, unchanged from M6.
+- **`handleFrame` (new) makes the interruption-vs-new-utterance decision
+  every frame.** If no turn is active, it behaves exactly like M6's loop.
+  If a turn *is* active, a quiet frame is still ignored (M6's old
+  behavior, preserved for the non-interrupting case), but a loud frame
+  calls `interrupt` and then falls through into the segmenter — the same
+  frame both signals the interruption and becomes the first frame of the
+  interrupting utterance. There is no separate "is this an interruption"
+  event type at the frame level; a turn simply has no successor until a
+  loud-enough frame arrives, interrupted or not.
+- **`handleUtterance` (mostly unchanged) gained `ctx.Err()` checks before
+  every user-visible side effect**, not just a single check at the top —
+  see this file's "Current status" section above for why one check isn't
+  enough (agent.Run's own internal select can return a nil error after
+  ctx is already cancelled) and why this is a turn-ownership check, not a
+  restatement of `policy.Evaluator`'s version comparison. The pre-M7
+  direct-call test seam (`session_test.go`'s M6 tests call
+  `handleUtterance(context.Background(), ...)` with no turn registered)
+  still works unchanged: with no turn active, these checks are simply
+  never triggered.
+- **Turn IDs use the same `"<prefix>-<6 random hex bytes>"` convention**
+  as `generateSessionID` (manager.go, M6) and `tasks.Store`'s
+  `generateTaskID` (M3) — `voice.newTurnID()`. No new ID scheme was
+  introduced.
+- **`UserInterrupted`/`ResponseInvalidated` (`internal/events`) are new
+  M7 event types**, not new M7 concepts — `docs/EVENT_MODEL.md` reserved
+  both names and descriptions back in M0, before either had a producer.
+  `voice.VoiceSession.interrupt` is currently the only producer of both,
+  and — like every other event in this codebase before a real event store
+  exists — they're only logged (`*slog.Logger`), not persisted anywhere.
+- **The three-way tie between "tool finishes," "user interrupts," and
+  "response is mid-delivery" is deliberately not fully eliminated** — see
+  "Current status" above and `TestRace_InterruptVsToolCompletion`'s doc
+  comment in `internal/voice/interruption_test.go` for the exact
+  trade-off (a session-wide lock across TTS synthesis would close it, at
+  the cost of blocking barge-in detection during every response). Two
+  narrower, fully deterministic races (interrupt landing while TTS is
+  genuinely in-flight; interrupt landing exactly as `Transport.Send`
+  returns) are closed and tested — see `TestRace_InterruptVsTTSGeneration`
+  and `TestRace_InterruptVsAudioDelivery`.
 
 ## Commands
 
@@ -710,3 +829,73 @@ about. Keep entries short — detail belongs in `docs/` and commit history.
   implemented after recovering the repository from a prior WSL crash —
   GitHub's `main` branch (through the M5 commit) was verified as the
   accurate baseline before any M6 work began; M0–M5 required no rework.
+- **M7 (done):** Added interruption/barge-in handling entirely inside
+  `internal/voice` — zero changes to `internal/agent`, `internal/tasks`,
+  or `internal/policy`. Every instruction is now a logical turn
+  (`voice`'s unexported `turn` type: an id + `context.CancelFunc`).
+  `VoiceSession` replaced its M6 `speaking bool` with a mutex-guarded
+  `current *turn`, since each utterance now runs on its own goroutine
+  (`startTurn`) instead of blocking `Run`'s frame loop — the loop keeps
+  consuming inbound audio while a turn is in flight, which is what makes
+  barge-in detection possible at all. `handleFrame` (new) treats a loud
+  inbound frame arriving while a turn is active as an interruption: it
+  cancels that turn's context (propagating into `agent.Run`/`tasks.Store`
+  through the exact same M3/M5 cancellation path, unchanged), calls a new
+  `Transport.StopAudio` method to discard audio already queued for
+  playback (necessary because `Send` only enqueues for async, real-time-
+  paced delivery — cancelling ctx after `Send` returns doesn't stop
+  already-queued samples), and the same frame is then fed into the
+  segmenter as the start of the next, authoritative turn.
+  `handleUtterance` gained `ctx.Err()` checks before every user-visible
+  side effect (TTS synthesis, `Transport.Send`), not just one at the top,
+  since a turn can be interrupted at any point and `agent.Run`'s own
+  internal select can return a nil error even after ctx is cancelled.
+  Added two new event types, `events.TypeUserInterrupted` and
+  `events.TypeResponseInvalidated` — both names/descriptions were already
+  reserved in `docs/EVENT_MODEL.md` since M0; `voice.VoiceSession` is
+  their first and only producer, logged via `*slog.Logger` (no event
+  store exists yet, same as every other event in this codebase).
+  `livekit.Transport.StopAudio` implements the new interface method as
+  `PCMLocalTrack.ClearQueue()` (confirmed by reading
+  `server-sdk-go/v2/pkg/media/pcmlocaltrack.go` directly — `WriteSample`
+  only pushes into an internal buffer a background goroutine paces out
+  over real time, exactly the gap `StopAudio` needed to close). No
+  version-staleness check was duplicated into voice — `ctx.Err()` checks
+  are a turn-ownership guard, a different concern from
+  `policy.Evaluator`'s `result.BoundVersion == machine.CurrentVersion`,
+  which is untouched. Added `internal/voice/interruption_test.go`: a
+  full-duplex acceptance test modeling the exact M7 scenario (request A
+  in flight → interrupt → request B becomes authoritative, only B's
+  audio ever reaches the transport), error-handling tests (idle-session
+  interruption is a no-op, double interruption is safe, rapid A→B→C
+  interruption chains work), and three race tests — two with real
+  synchronization (interrupt landing while TTS is genuinely in-flight;
+  interrupt landing exactly as `Transport.Send` returns), both asserting
+  the interrupted turn's content never reaches the transport, and one
+  true, unsynchronized tie (`TestRace_InterruptVsToolCompletion`) that
+  deliberately does *not* assert which side wins — only that the task
+  engine always reaches one consistent terminal state — because
+  guaranteeing the interrupt always wins that exact tie would require
+  holding a session-wide lock across TTS synthesis, which would block
+  barge-in detection during every response; this trade-off, and why it
+  mirrors `tasks.Store`'s own pre-existing `CancelTask`-vs-`finishTask`
+  race, is documented in that test's doc comment. Updated
+  `docs/ARCHITECTURE.md` (voice flow, interruption flow, LiveKit
+  component section), `docs/ROADMAP.md` (M7 objective annotated with
+  implementation decisions), `docs/DOMAIN_MODEL.md` (added the
+  not-a-persisted-entity `Turn` note under `VoiceSession`),
+  `docs/EVENT_MODEL.md` (`UserInterrupted`/`ResponseInvalidated` marked
+  Implemented), and `README.md`. Zero new third-party dependencies —
+  `go.mod` unchanged. Verified: `gofmt -w .` (clean), `go vet`, `go test`,
+  and `go test -race` (including 50 repeated runs of
+  `internal/voice` alone) all pass for every package except
+  `internal/voice/livekit` and `cmd/server` (which imports it) — same
+  pre-existing `libopus`/`pkg-config` environment limitation as M6, not a
+  code defect introduced by M7; every other package, including
+  `internal/voice`'s own core logic (now 20 tests), builds and tests
+  cleanly. `go build ./...` was not attempted as a claim of full success
+  for this reason — the exact failing package and why is called out
+  explicitly rather than glossed over. No frontend, no database/event
+  persistence, no production-grade VAD, and no LLM provider was added —
+  M8 introduces the frontend visualization of everything M2–M7 already
+  produce; M9 adds end-to-end benchmarking and the rehearsed demo script.

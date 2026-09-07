@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"voxstate/backend/internal/activity"
 	"voxstate/backend/internal/agent"
 	"voxstate/backend/internal/api"
 	"voxstate/backend/internal/config"
@@ -33,10 +34,22 @@ import (
 // make the happy path annoyingly slow.
 const demoToolDelay = 3 * time.Second
 
+// activityLogCapacity bounds the M8 in-memory activity ring buffer (see
+// internal/activity) — large enough to cover a demo session's worth of
+// task/voice events, small enough to never be a meaningful memory
+// concern for a process that already holds all state in memory anyway.
+const activityLogCapacity = 200
+
 func main() {
 	cfg := config.Load()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With(
+	// activityLog taps the same structured log lines already written to
+	// stdout (tasks.Store/voice.VoiceSession's lifecycle events) into a
+	// bounded buffer the M8 frontend can poll via GET /activity — see
+	// internal/activity's doc comment for why this needed no changes to
+	// any domain package.
+	activityLog := activity.NewHandler(slog.NewJSONHandler(os.Stdout, nil), activityLogCapacity)
+	logger := slog.New(activityLog).With(
 		"app_env", cfg.AppEnv,
 	)
 
@@ -71,7 +84,7 @@ func main() {
 	}
 	voiceManager := voice.NewManager(stateStore, ag, roomProvisioner, sttFactory, ttsFactory, transportFactory, logger)
 
-	handler := api.NewRouter(logger, stateStore, taskStore, evaluator, ag, voiceManager)
+	handler := api.NewRouter(logger, stateStore, taskStore, evaluator, ag, voiceManager, activityLog)
 	srv := server.New(cfg.Addr(), handler)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -51,6 +51,18 @@ const (
 	// (M4). This is the mechanical enforcement point for the stale-result
 	// rule described in CLAUDE.md and docs/ARCHITECTURE.md.
 	TypeToolResultRejected Type = "ToolResultRejected"
+
+	// TypeUserInterrupted fires when a VoiceSession detects the user
+	// speaking over an in-progress turn (barge-in) and cancels it (M7).
+	// Named and described in docs/EVENT_MODEL.md ahead of M7's
+	// implementation; internal/voice.VoiceSession is its only producer.
+	TypeUserInterrupted Type = "UserInterrupted"
+
+	// TypeResponseInvalidated fires alongside TypeUserInterrupted: the
+	// interrupted turn's response — whatever state it was in (still being
+	// planned, mid-tool, mid-synthesis, or already queued for playback) —
+	// is no longer authoritative and must never reach the user (M7).
+	TypeResponseInvalidated Type = "ResponseInvalidated"
 )
 
 // Event is an in-memory domain value describing something that happened.

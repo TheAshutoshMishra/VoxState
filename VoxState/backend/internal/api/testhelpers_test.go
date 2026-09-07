@@ -27,5 +27,5 @@ func newTestRouter() http.Handler {
 	registry := tools.NewRegistry(tools.NewVibrationScan(0), tools.NewTemperatureScan(0))
 	ag := agent.New(stateStore, taskStore, evaluator, registry, nil)
 	voiceManager := voice.NewManager(stateStore, ag, fakeRoomProvisioner{}, fakeSTTFactory, fakeTTSFactory, fakeTransportFactory, logger)
-	return NewRouter(logger, stateStore, taskStore, evaluator, ag, voiceManager)
+	return NewRouter(logger, stateStore, taskStore, evaluator, ag, voiceManager, nil)
 }

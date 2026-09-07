@@ -87,8 +87,40 @@ only, same as every other engine today).
 **Objective:** Detect user interruption via LiveKit, trigger task
 cancellation (M3) and response invalidation, and have the agent replan and
 respond based on current state. This is where M3/M4/M6 come together.
+**Decisions made during implementation:** every instruction is now a
+logical **turn** (`internal/voice`'s unexported `turn` type — an ID plus
+the `context.CancelFunc` for that turn's own child context). `Session.Run`
+still owns segmentation on a single goroutine, but each complete utterance
+now starts its turn on its own goroutine, so the frame loop keeps
+consuming inbound audio (and can therefore detect a barge-in) while a turn
+is still being processed or spoken. A loud inbound frame arriving while a
+turn is active is treated as interruption: the turn's context is
+cancelled — reusing the exact M3/M5 cancellation path `agent.Run`/
+`tasks.Store` already had (no second cancellation mechanism) —
+`voice.Transport` gained one new method, `StopAudio`, so already-queued
+outbound audio can be discarded promptly (necessary because `Transport.Send`
+only enqueues for asynchronous, real-time-paced delivery — see
+`voice/livekit`'s `Transport.Send`/`lkmedia.PCMLocalTrack` — so cancelling
+a context after `Send` returns does nothing on its own). `internal/events`
+gained the two event types `docs/EVENT_MODEL.md` had already reserved for
+this milestone, `UserInterrupted` and `ResponseInvalidated`; both are
+logged (no persistent store yet, same M2–M6 limitation) with
+session/turn/machine identifiers. Stale-result fencing was **not**
+duplicated into voice: `handleUtterance` checks `ctx.Err()` before every
+user-visible side effect purely as a turn-ownership guard, never comparing
+state versions itself — `policy.Evaluator` remains the sole authority on
+that. A true simultaneous tie between "the tool finished" and "the user
+interrupted" is resolved the same way M3's own `CancelTask`-vs-`finishTask`
+race already is (whichever wins is fine, as long as the outcome is single
+and consistent) — see `TestRace_InterruptVsToolCompletion`'s doc comment
+in `internal/voice/interruption_test.go` for why guaranteeing the
+interrupt always wins that exact tie would require holding a session-wide
+lock across TTS synthesis, which would block barge-in detection during
+every response.
 **Not built yet:** Frontend visualization of any of this — still
-API/log-observable only.
+API/log-observable only. Production-grade VAD/barge-in detection is still
+M6's fixed energy/silence heuristic (`segmenter.loud`), not adaptive to
+ambient noise or false positives.
 
 ## M8 — Frontend & Visualization
 **Objective:** Next.js/React frontend showing machine state, live event

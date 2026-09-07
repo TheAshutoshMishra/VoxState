@@ -101,6 +101,18 @@ themselves.
   about, so "diagnose it" resolves to the right machine)
 - `started_at`, `ended_at`
 
+**Turn (M7, not a persisted entity):** every instruction within a
+`VoiceSession` now belongs to exactly one logical turn — an in-memory-only
+`id` + cancellation handle (`internal/voice`'s unexported `turn` type), not
+a domain entity with its own table. A session has at most one *current*
+turn at a time; interrupting it (a new utterance starting while the
+current one is still being processed or spoken) cancels that turn's
+context and clears it as current before the interrupting utterance
+becomes the new one. `DiagnosticTask` still has no `turn_id` column (it
+already has no persisted `session_id` either, per the note above) — a
+turn's association with the task(s) it created is only ever in-memory,
+via the same cancelled `context.Context` both share, not a foreign key.
+
 ## Relationships
 
 ```

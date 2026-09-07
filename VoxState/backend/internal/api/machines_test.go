@@ -215,3 +215,33 @@ func TestGetState_VersionOutOfRange_HTTP(t *testing.T) {
 		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }
+
+// TestListMachines_HTTP covers M8's new GET /machines endpoint — the
+// frontend's only way to discover which machine IDs exist.
+func TestListMachines_HTTP(t *testing.T) {
+	router := newTestRouter()
+
+	rec := doJSON(t, router, http.MethodGet, "/machines", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var empty []machineResponse
+	if err := json.NewDecoder(rec.Body).Decode(&empty); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("len(empty) = %d, want 0 on a fresh store", len(empty))
+	}
+
+	doJSON(t, router, http.MethodPost, "/machines", createMachineRequest{ID: "machine-17", Name: "Machine 17"})
+	doJSON(t, router, http.MethodPost, "/machines", createMachineRequest{ID: "machine-18", Name: "Machine 18"})
+
+	rec = doJSON(t, router, http.MethodGet, "/machines", nil)
+	var list []machineResponse
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("len(list) = %d, want 2", len(list))
+	}
+}

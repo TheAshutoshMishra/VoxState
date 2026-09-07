@@ -113,6 +113,19 @@ func (h *machineHandlers) getMachine(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toMachineResponse(machine))
 }
 
+// listMachines returns every registered machine. It exists for M8's
+// frontend, which has no other way to discover which machine IDs exist —
+// every other machine/state endpoint requires already knowing one.
+func (h *machineHandlers) listMachines(w http.ResponseWriter, r *http.Request) {
+	machines := h.store.ListMachines()
+
+	out := make([]machineResponse, 0, len(machines))
+	for _, m := range machines {
+		out = append(out, toMachineResponse(m))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (h *machineHandlers) getState(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 

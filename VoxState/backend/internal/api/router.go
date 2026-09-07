@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"voxstate/backend/internal/activity"
 	"voxstate/backend/internal/agent"
 	"voxstate/backend/internal/policy"
 	"voxstate/backend/internal/state"
@@ -17,20 +18,27 @@ import (
 )
 
 // NewRouter builds the top-level HTTP handler for the VoxState backend,
-// wrapped with minimal structured request logging. state.Store,
-// tasks.Store, policy.Evaluator, agent.Agent, and voice.Manager are the
-// only dependencies the API layer has as of M6 — it owns machine/state/
-// task/result/agent/voice endpoints and delegates all validation/
-// business logic to those packages.
-func NewRouter(logger *slog.Logger, store *state.Store, taskStore *tasks.Store, evaluator *policy.Evaluator, ag *agent.Agent, voiceManager *voice.Manager) http.Handler {
+// wrapped with minimal structured request logging and (M8) permissive
+// CORS so the Next.js frontend (a separate origin in dev) can call it.
+// state.Store, tasks.Store, policy.Evaluator, agent.Agent, and
+// voice.Manager are the only domain dependencies the API layer has — it
+// owns machine/state/task/result/agent/voice endpoints and delegates all
+// validation/business logic to those packages. activityLog is optional
+// (nil is safe, see activityHandlers.list) — M8's read-only event-stream
+// endpoint for the frontend; see internal/activity's doc comment for what
+// it captures and why introducing it did not require touching any
+// existing domain package's code.
+func NewRouter(logger *slog.Logger, store *state.Store, taskStore *tasks.Store, evaluator *policy.Evaluator, ag *agent.Agent, voiceManager *voice.Manager, activityLog *activity.Handler) http.Handler {
 	mh := &machineHandlers{store: store}
 	th := &taskHandlers{store: taskStore}
 	ph := &policyHandlers{tasks: taskStore, evaluator: evaluator}
 	ah := &agentHandlers{agent: ag}
 	vh := &voiceHandlers{manager: voiceManager}
+	acth := &activityHandlers{log: activityLog}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler)
+	mux.HandleFunc("GET /machines", mh.listMachines)
 	mux.HandleFunc("POST /machines", mh.createMachine)
 	mux.HandleFunc("GET /machines/{id}", mh.getMachine)
 	mux.HandleFunc("GET /machines/{id}/state", mh.getState)
@@ -45,8 +53,28 @@ func NewRouter(logger *slog.Logger, store *state.Store, taskStore *tasks.Store, 
 	mux.HandleFunc("POST /machines/{id}/voice/sessions", vh.start)
 	mux.HandleFunc("GET /voice/sessions/{id}", vh.get)
 	mux.HandleFunc("POST /voice/sessions/{id}/end", vh.end)
+	mux.HandleFunc("GET /activity", acth.list)
 
-	return withRequestLogging(logger, mux)
+	return withCORS(withRequestLogging(logger, mux))
+}
+
+// withCORS allows any origin to call this API. This is a hackathon-demo
+// posture (the frontend and backend run on different localhost ports in
+// dev, and there is no user-auth/session model anywhere in this codebase
+// yet to scope origins against more precisely) — see CLAUDE.md's M8 notes
+// for the explicit trade-off. It handles preflight OPTIONS requests
+// itself rather than registering them per-route.
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // withRequestLogging logs one structured line per request. This is the

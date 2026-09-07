@@ -14,6 +14,7 @@ package state
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -146,6 +147,22 @@ func (s *Store) GetMachine(id string) (Machine, error) {
 		return Machine{}, ErrMachineNotFound
 	}
 	return entry.machine, nil
+}
+
+// ListMachines returns every registered machine, oldest first. It exists
+// for M8's frontend, which otherwise has no way to discover which machine
+// IDs exist (every other Store method requires already knowing one) —
+// read-only, purely additive, same pattern as tasks.Store.ListTasksForMachine.
+func (s *Store) ListMachines() []Machine {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]Machine, 0, len(s.machines))
+	for _, entry := range s.machines {
+		out = append(out, entry.machine)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out
 }
 
 // GetCurrentState returns the newest MachineState for a machine.

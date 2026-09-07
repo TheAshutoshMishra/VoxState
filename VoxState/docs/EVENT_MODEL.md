@@ -63,9 +63,14 @@ regardless of whether the result is later accepted or rejected — completion
 and validity are separate concerns.
 
 ### UserInterrupted
-The user spoke over the agent (LiveKit interruption signal) or explicitly
-told the agent to stop/change course. This is the trigger event that leads
-the Agent to request cancellation of in-flight tasks.
+**Implemented (M7)** as `events.TypeUserInterrupted`, produced by
+`internal/voice.VoiceSession` when an inbound frame loud enough to count
+as speech arrives while a turn is active (a barge-in) — `voice.Session`
+is currently its only producer. The user spoke over the agent (LiveKit
+interruption signal) or explicitly told the agent to stop/change course.
+This is the trigger event that leads to cancellation of the interrupted
+turn's in-flight task, via the same task engine (M3) every other
+cancellation path already uses.
 
 ### ToolResultRejected
 The Policy layer determined that a `ToolResult`'s `produced_for_state_version`
@@ -82,11 +87,22 @@ that the Agent/Policy layer needs to reconcile or surface the conflict
 rather than silently taking the latest write as truth.
 
 ### ResponseInvalidated
-A response the Agent was in the process of formulating (or had already
-started speaking) was invalidated by a state change or interruption before
-it reached the user, or was invalidated by a `ToolResultRejected`. Used to
-show, in the frontend timeline, the moments where the system caught itself
-before saying something wrong.
+**Implemented (M7)** as `events.TypeResponseInvalidated`, produced by
+`internal/voice.VoiceSession` alongside every `UserInterrupted` — the
+interrupted turn's response, whatever state it was in (still being
+planned, mid-tool, mid-synthesis, or already queued for playback), is
+recorded as no longer authoritative. `ToolResultRejected`-triggered
+invalidation (a response invalidated purely by a stale policy rejection,
+with no user interruption involved) is not separately emitted yet —
+`ToolResultRejected` itself already records that case; whether it also
+warrants its own `ResponseInvalidated` is left for whichever milestone
+adds frontend timeline rendering (M8) to decide, based on what the
+timeline actually needs to show. A response the Agent was in the process
+of formulating (or had already started speaking) was invalidated by a
+state change or interruption before it reached the user, or was
+invalidated by a `ToolResultRejected`. Used to show, in the frontend
+timeline, the moments where the system caught itself before saying
+something wrong.
 
 ## What's intentionally deferred
 
