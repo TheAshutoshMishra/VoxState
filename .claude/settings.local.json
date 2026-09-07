@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo \"---exit $?---\")",
+      "Bash(go version *)",
+      "Bash(go build *)",
+      "Read(//usr/local/go/bin/**)",
+      "Bash(find / -maxdepth 4 -iname \"go\" -type f)",
+      "Bash(/usr/local/go/bin/go version *)",
+      "Bash(kill -0 13114)",
+      "Skill(deep-research)",
+      "WebSearch",
+      "WebFetch(domain:rime.ai)",
+      "WebFetch(domain:docs.rime.ai)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.livekit.io)",
+      "Bash(curl -s \"https://api.github.com/orgs/rimelabs/repos?per_page=100\")",
+      "Bash(python3 -c ' *)",
+      "WebFetch(domain:www.rime.ai)",
+      "WebFetch(domain:docs.vapi.ai)",
+      "WebFetch(domain:pypi.org)"
+    ]
+  }
+}

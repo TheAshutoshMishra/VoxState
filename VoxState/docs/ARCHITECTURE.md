@@ -1,0 +1,298 @@
+# VoxState Architecture
+
+Status: M0 — Foundation. This document describes the target architecture for the
+system as a whole. Components described here are **not yet implemented** unless
+explicitly noted; implementation begins at M1.
+
+## 1. The problem this architecture serves
+
+A realtime voice agent talks to a user about a physical system (a machine) whose
+state can change independently of the conversation — a technician does work on
+it, a sensor reports a fault, another operator issues a command. Meanwhile the
+agent may have already started long-running work (diagnostic tools) against the
+state as it understood it a moment ago.
+
+Two failure modes must be prevented:
+
+1. **Stale results leaking into speech.** A tool call started against an old
+   world state finishes after the world has changed, and its result is spoken
+   as if it were still true.
+2. **Uncancelled work outliving its relevance.** The user interrupts
+   ("stop, that's already fixed") but background tasks keep running, consuming
+   resources and racing to produce output that must then be suppressed anyway.
+
+Every architectural decision below exists to make these two failure modes
+structurally hard to hit, not just handled by convention.
+
+## 2. Component overview
+
+```
+                              ┌─────────────────────────┐
+                              │        Frontend          │
+                              │   (Next.js / React / TS) │
+                              │  state timeline, events, │
+                              │  machine dashboard        │
+                              └────────────▲──────────────┘
+                                           │ REST/WS (read + observe)
+                                           │
+┌───────────────────────────────────────────────────────────────────────┐
+│                         Go Backend (modular monolith)                  │
+│                                                                          │
+│   ┌────────────┐   audio/text   ┌────────────────┐                     │
+│   │  LiveKit    │◄──────────────►│   API / Session │                     │
+│   │  (voice     │   room events  │   layer (api/)  │                     │
+│   │  transport) │                └───────┬─────────┘                     │
+│   └────────────┘                        │                                │
+│                                          ▼                                │
+│                                  ┌──────────────┐                         │
+│                                  │  Agent (LLM)  │  reasons, decides       │
+│                                  │  agent/       │  tool calls, replans    │
+│                                  └──────┬───────┘                         │
+│                                          │ issues / cancels                │
+│                                          ▼                                │
+│   ┌───────────────┐   bound to    ┌──────────────┐   reads/writes   ┌───────────────┐
+│   │  Tool          │◄─────────────│  Task Engine  │◄────────────────►│  State Engine  │
+│   │  Orchestrator  │  state ver.  │  tasks/       │   current ver.    │  state/        │
+│   │  tools/        │              └──────┬───────┘                   └───────┬───────┘
+│   └───────┬───────┘                       │                                   │
+│           │ results (tagged w/ state ver) │                                   │
+│           ▼                                ▼                                   ▼
+│   ┌────────────────────────────────────────────────────────────────────────┐  │
+│   │                  Policy layer (policy/) — validates staleness           │  │
+│   │      "was this produced against the current state version?"            │  │
+│   └───────────────────────┬────────────────────────────────────────────────┘  │
+│                            │ accept / reject                                    │
+│                            ▼                                                    │
+│                     back to Agent for response synthesis                        │
+│                                                                                   │
+│   ┌──────────────────────────────────────────────────────────────────────┐     │
+│   │                    Event Store (events/) — append-only                │◄────┘
+│   │   every state change, task lifecycle step, rejection is an event      │
+│   └──────────────────────────────────┬───────────────────────────────────┘
+│                                       │ persisted
+└───────────────────────────────────────┼─────────────────────────────────────┘
+                                        ▼
+                              ┌──────────────────┐
+                              │   PostgreSQL       │
+                              │  events, state,     │
+                              │  tasks, results      │
+                              └──────────────────┘
+
+   User speech ──► LiveKit ──► Deepgram (STT) ──► transcript ──► Agent
+   Agent's final response text ──► Rime (TTS) ──► LiveKit ──► user hears it
+```
+
+## 3. Components and responsibilities
+
+### API / Session layer (`internal/api`)
+Entry point for the frontend (REST, not yet built) and, as of M6, for
+minting/ending voice sessions (`POST /machines/{id}/voice/sessions`,
+`GET`/`POST /voice/sessions/{id}...`) — delegates all session lifecycle to
+`internal/voice.Manager`. Contains no business logic itself, matching
+every other handler group in the package.
+
+### State Engine (`internal/state`)
+Owns the current `MachineState` and its version number per machine. Every
+accepted change produces a new immutable state version. This is the single
+source of truth that all other components check against. It never rewrites
+history — it appends.
+
+### Event Store (`internal/events`)
+Append-only log of everything that happened: state changes, task lifecycle
+transitions, interruptions, rejections. This is what makes the system
+observable and debuggable, and it is the mechanism the frontend uses to render
+a timeline. State Engine changes and Task Engine transitions are themselves
+recorded here, so the event log is the audit trail, not a derived cache.
+
+### Task Engine (`internal/tasks`)
+Creates and tracks `DiagnosticTask` records. Every task is stamped with the
+state version that was current at the moment it was created. Exposes
+cancellation (a task has a cancel signal that tool execution must observe).
+Does not itself decide whether a task's result is usable — that is the
+Policy layer's job.
+
+### Tool Orchestrator (`internal/tools`)
+Executes the actual diagnostic/tool work (currently deterministic
+simulated tools for the demo — `vibration_scan`, `temperature_scan`).
+**Implemented (M5)** as a small `Tool` interface plus a `Registry`. A tool
+itself is deliberately not state/task/policy-aware — it receives a
+minimal `RunInput` and a cancellation-aware `context.Context`, and
+returns a raw payload. It is the caller (the Agent) that stamps a task's
+`BoundVersion` onto the tool's output to form a `policy.ToolResult` —
+tools never see or attach a state version themselves, which keeps them
+trivially decoupled from the versioning machinery they must never be able
+to bypass.
+
+### Policy layer (`internal/policy`)
+The gatekeeper. Before any tool result or task output is allowed to influence
+what the agent says, Policy checks: *is the state version this result was
+produced against still the current version?* If not, the result is rejected
+and a `ToolResultRejected` event is recorded. This is the mechanical
+enforcement of the stale-result rule (see §7).
+
+### Agent (`internal/agent`)
+Orchestrates the reasoning/tool-calling loop: reads current machine state,
+asks a `Planner` which tool to run, creates a task bound to that state's
+version, runs the tool, and gates the result through the Policy layer
+before consuming it. **Implemented (M5)** with a deterministic
+`KeywordPlanner` — no LLM provider is wired in yet. `Planner` is the
+narrow interface a real LLM/reasoning provider will implement in a later
+milestone; introducing it now would be premature given M5's scope. As of
+M6, `internal/voice.Session` feeds this same `Agent.Run` the transcript
+text Deepgram produced — the Agent itself is unchanged, unaware it's now
+reachable from voice as well as HTTP. The Agent does not yet react to
+interruption signals — that remains an M7 concern; M6 only gets it talked
+to and heard, not interrupted.
+
+### Voice transport — LiveKit
+**Implemented (M6)** in `internal/voice/livekit`. LiveKit's "Agents"
+framework — the thing that would normally run STT/LLM/TTS orchestration
+for you inside a room — is Python and Node.js/TypeScript only; there is
+no Go support and none is planned (confirmed against LiveKit's own docs
+and both the `livekit/agents` and `livekit/agents-js` repos). The Go
+backend therefore joins each session's room directly as a raw participant
+via `server-sdk-go/v2`, using its `pkg/media` helpers
+(`lkmedia.PCMLocalTrack`/`PCMRemoteTrack`) for Opus encode/decode instead
+of a framework that doesn't exist for Go. `internal/voice/livekit` also
+mints human-participant access tokens (`protocol/auth.AccessToken`) and
+handles room admin (create/delete) via `RoomServiceClient` — see
+`voice.RoomProvisioner` and `voice.Transport`.
+
+Room membership and interruption/VAD signals: LiveKit itself does not
+hand the Go SDK a ready-made "user started/stopped talking" event the way
+its Agents framework would for Python/Node — `internal/voice`'s own
+`segmenter.go` does simple energy/silence-threshold utterance
+segmentation instead (see the Tool Orchestrator/Agent-adjacent "Voice
+session" flow below). This is a known, hand-tuned, non-production-grade
+heuristic, not adaptive VAD.
+
+### STT — Deepgram
+**Implemented (M6)** in `internal/voice/deepgram`, using Deepgram's
+official Go SDK (`deepgram-go-sdk/v3`). Not pinned down by any earlier
+milestone's docs (unlike LiveKit/Rime, which M0's README already named) —
+selected during M6 implementation. Calls Deepgram's prerecorded REST
+endpoint once per utterance `segmenter.go` already produced, rather than
+holding open a streaming websocket: since the Go LiveKit path forces
+`internal/voice` to do its own endpointing anyway, a second, redundant
+streaming endpointing layer underneath it would add complexity without a
+latency benefit once an utterance is already a complete, bounded buffer.
+
+### TTS — Rime
+**Implemented (M6)** in `internal/voice/rime`. Converts the agent's
+final, policy-validated response text to speech. Only ever receives text
+that has passed the staleness check — see `voice.TextResponse`, the M6
+equivalent of M5's "the Agent never consumes a stale payload" guarantee.
+Rime has no official SDK in any language except Python framework plugins,
+so this is a hand-rolled REST client (`POST /v1/rime-tts`, requesting WAV
+output and parsing the returned RIFF container directly). Every request
+states `samplingRate` explicitly — Rime's own documentation gives
+inconsistent implicit defaults across different pages — and `Synthesize`
+reports back whichever sample rate the response's own `fmt` chunk states,
+not the value requested, so a mismatch between what was asked for and
+what Rime actually produced can never silently propagate downstream.
+
+### Frontend (Next.js/React/TS)
+Read-only observability surface for the demo: shows machine state, the event
+timeline, active/cancelled tasks, and rejected results as they happen. Does
+not participate in the correctness guarantees — it's a window into them.
+
+### PostgreSQL
+Durable storage for events, state versions, tasks, and tool results. Chosen
+over an in-memory-only approach because the event log and state history are
+core to demonstrating the problem (you need to be able to show, after the
+fact, exactly what was rejected and why).
+
+## 4. Data flow (steady state, no interruption)
+
+```
+user speaks → LiveKit → API layer → Agent
+Agent decides a tool is needed → Task Engine creates DiagnosticTask
+    bound to current StateVersion(N) → Tool Orchestrator runs tool
+Tool finishes → result tagged StateVersion(N) → Policy layer checks:
+    current version still N? → yes → Agent synthesizes response → Rime → LiveKit → user hears it
+Every step above also emits an Event to the Event Store.
+```
+
+## 5. Voice flow
+
+**Implemented (M6)**, minus interruption handling (M7):
+
+```
+Mic audio → LiveKit room → voice.Transport (raw participant, pkg/media)
+    → voice.segmenter (energy/silence VAD) → complete utterance
+    → Deepgram (voice.STT) → transcript text
+    → agent.Agent.Run (unchanged from M5) → agent.Result
+    → voice.TextResponse (Accepted → payload text; Rejected → safe
+      fallback text, never the stale payload) → Rime (voice.TTS)
+    → PCM audio → voice.Transport.Send → LiveKit room → user's speakers
+```
+
+LiveKit is also the eventual source of interruption signals (user starts
+speaking while agent audio is still playing) — M6 does not react to this
+yet: `internal/voice.Session` simply drops inbound audio while a response
+is being synthesized/sent, rather than queuing or reacting to it. M7 is
+what turns "user started talking over the agent" into cancellation +
+replanning.
+
+## 6. State flow
+
+```
+Event occurs (technician report, sensor update, manual override, etc.)
+    → State Engine validates it → new immutable MachineState created
+    → StateVersion incremented (N → N+1)
+    → StateChanged event recorded in Event Store
+    → any task bound to version N is now operating against a stale version
+```
+
+State versions are per-machine and strictly increasing. Nothing mutates a
+past version; the system only ever moves forward.
+
+## 7. Task flow, interruption flow, and stale-result flow
+
+This is the core of VoxState and is documented in detail in
+`DOMAIN_MODEL.md` (entities) and inline below (behavior).
+
+**Task flow**
+```
+Agent requests diagnostic → Task Engine stamps task with StateVersion(N)
+    → Tool Orchestrator executes, watching a cancellation signal
+    → on completion, result is tagged with StateVersion(N)
+```
+
+**Interruption flow**
+```
+User speaks over agent audio → LiveKit signals interruption
+    → API layer notifies Agent → Agent requests cancellation of all
+      in-flight tasks tied to the current conversation turn
+    → Task Engine flips task status to Cancelled, signals Tool Orchestrator
+    → UserInterrupted event recorded
+    → Agent takes the new user input into account and replans
+```
+
+**Stale-result flow (concrete walkthrough)**
+```
+State v10 exists.
+Agent starts DiagnosticTask T1, bound to StateVersion v10.
+While T1 runs, a technician report changes the machine → State v11 created.
+T1 finishes and returns a result tagged v10.
+Policy layer compares: task's bound version (v10) != current version (v11).
+Result is rejected. ToolResultRejected event recorded.
+Agent is informed the result is stale, not handed the payload.
+Agent replans against v11 (e.g., re-runs diagnostics, or answers directly
+    if v11 already contains the answer).
+Rime speaks a response that only reflects v11.
+```
+
+This flow is what M4 (Stale Result Protection) will implement and what the
+demo script is built around.
+
+## 8. Why a modular monolith
+
+See `docs/decisions/001-modular-monolith.md`. In short: at hackathon scope,
+network-boundary microservices would add distributed-systems failure modes
+(partial failure, network staleness) that are *not* the problem we're trying
+to demonstrate — we want staleness to be a property of world state and task
+binding, not an artifact of service-to-service lag. A single Go process with
+clearly separated internal packages gives us clean boundaries without that
+noise, and nothing here is deployment-target-locked — packages could be
+split out later if ever needed.

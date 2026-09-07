@@ -1,0 +1,28 @@
+# VoxState local development environment.
+#
+# M0: only Postgres is defined — it's the one dependency the architecture
+# commits to up front (see docs/decisions/001-modular-monolith.md).
+# `backend` and `frontend` services will be added once there is something
+# to run (M1 and M8 respectively). Redis is intentionally absent — add only
+# if a later milestone demonstrates a real need.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: voxstate-postgres
+    environment:
+      POSTGRES_USER: voxstate
+      POSTGRES_PASSWORD: voxstate
+      POSTGRES_DB: voxstate
+    ports:
+      - "5432:5432"
+    volumes:
+      - voxstate-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voxstate"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  voxstate-postgres-data:

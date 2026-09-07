@@ -1,0 +1,30 @@
+# --- Env / secrets ---
+.env
+.env.local
+*.pem
+
+# --- Go ---
+/backend/bin/
+/backend/*.test
+*.out
+vendor/
+
+# --- Node / Next.js ---
+/frontend/node_modules/
+/frontend/.next/
+/frontend/out/
+/frontend/build/
+*.tsbuildinfo
+.pnpm-store/
+
+# --- Docker ---
+docker/data/
+
+# --- OS / editor ---
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# --- Logs ---
+*.log
