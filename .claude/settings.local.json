@@ -89,7 +89,18 @@
       "Bash(curl -s -o /dev/null -w \"health status: %{http_code}\\\\n\" http://localhost:8080/health)",
       "Bash(kill -9 44186 44048)",
       "Bash(curl *)",
-      "Bash(grep -E \"cmd/server$|next dev|next-server\")"
+      "Bash(grep -E \"cmd/server$|next dev|next-server\")",
+      "Bash(make --version)",
+      "Bash(make help *)",
+      "Bash(grep -E \"cmd/server$|cmd/devserver|next dev|next-server\")",
+      "Bash(grep *)",
+      "Bash(make status *)",
+      "Bash(make fmt *)",
+      "Bash(make vet *)",
+      "Bash(make backend-test *)",
+      "Bash(make backend-test-all *)",
+      "Bash(make backend-bench *)",
+      "Bash(make frontend-check *)"
     ]
   }
 }
