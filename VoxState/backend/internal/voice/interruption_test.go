@@ -411,6 +411,19 @@ func TestInterrupt_RapidDoubleInterruption(t *testing.T) {
 	transport.frames <- quietFrame(16000, 16000)
 
 	waitFor(t, 2*time.Second, func() bool { return len(tts.Calls()) >= 1 })
+
+	// Interrupting B only cancels its context; the goroutine running its
+	// tool still has to observe ctx.Done() and the task engine's
+	// completion handler still has to mark it CANCELLED — both happen
+	// asynchronously relative to turn C's TTS call, so wait for that to
+	// actually land (found flaky under `go test -race -count=20` without
+	// this: task B was still RUNNING at the moment of the assertion,
+	// even though it always converged to CANCELLED shortly after).
+	waitFor(t, 2*time.Second, func() bool {
+		list, err := ts.ListTasksForMachine("machine-17")
+		return err == nil && len(list) >= 2 && list[1].Status != tasks.StatusRunning
+	})
+
 	cancel()
 	select {
 	case <-runErr:

@@ -49,7 +49,24 @@
       "Bash(curl -sv http://localhost:8080/health)",
       "Bash(pkill -f \"next dev\")",
       "Bash(pkill -f \"cmd/devserver\")",
-      "Bash(pkill -f \"go run ./cmd/devserver\")"
+      "Bash(pkill -f \"go run ./cmd/devserver\")",
+      "Bash(ls -la docs/)",
+      "Bash(ls -la frontend/)",
+      "Bash(xargs ls -la)",
+      "Bash(dpkg -l)",
+      "Bash(npx vitest *)",
+      "Bash(npx eslint *)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(kill %1)",
+      "Bash(wait)",
+      "Bash(env)",
+      "Bash(curl -s -X POST http://localhost:8080/machines -d '{\"id\":\"machine-agent-fresh\",\"name\":\"Fresh Demo\"}')",
+      "Bash(curl -s -X POST http://localhost:8080/machines/machine-agent-fresh/agent/run -d '{\"instruction\":\"please check vibration\"}')",
+      "Bash(grep -rInE \"\\(api[_-]?key|secret|token|password\\)\\\\s*[:=]\\\\s*['\\\\\"][A-Za-z0-9_\\\\-]{15,}['\\\\\"]\" --include=\"*.go\" --include=\"*.ts\" --include=\"*.tsx\" --include=\"*.md\" --include=\"*.yml\" --include=\"*.yaml\" --include=\"*.json\" .)",
+      "Bash(grep -rInE \"sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN \\(RSA|EC|OPENSSH|PRIVATE\\)\" -r . --include=\"*.go\" --include=\"*.ts\" --include=\"*.tsx\" --include=\"*.md\" --include=\"*.env*\" --include=\"*.json\" --include=\"*.yml\")",
+      "Bash(kill 14630)",
+      "Bash(kill 14658)",
+      "Bash(kill -9 25011)"
     ]
   }
 }

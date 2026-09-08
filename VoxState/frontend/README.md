@@ -1,36 +1,50 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# VoxState frontend
 
-## Getting Started
+Next.js/React/TypeScript control surface for the VoxState backend
+(`../backend`). See `../docs/ARCHITECTURE.md`'s "Frontend" section and
+"M8: backend authority" note, and `../CLAUDE.md`'s M8 milestone log entry,
+for the full design rationale. In short: this app displays and drives
+machine/state/task/policy/voice data, but it never decides
+ACCEPTED/REJECTED/STALE itself — every such verdict comes verbatim from
+the Go backend.
 
-First, run the development server:
+## Setup
+
+```bash
+npm install
+cp .env.example .env.local   # NEXT_PUBLIC_API_URL, defaults to http://localhost:8080
+```
+
+## Running
+
+Start the backend first (see `../backend`'s own instructions, or
+`../CLAUDE.md`'s "Commands" section). If `libopus`/`pkg-config` aren't
+installed locally, use `cd ../backend && go run ./cmd/devserver` instead
+of `cmd/server` — it serves the identical API with in-memory voice-
+provider fakes, sufficient for every panel except real LiveKit audio.
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Commands
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run build   # production build (also type-checks)
+npm run lint    # eslint
+npm test        # vitest run (jsdom, component-level unit tests)
+```
 
-## Learn More
+## Structure
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `app/` — Next.js App Router entry point (`page.tsx` lays out the panel grid)
+- `components/` — one component per panel (`MachinePanel`, `StateTimeline`,
+  `TaskPanel`, `PolicyPanel`, `VoicePanel`, `ActivityStream`) plus shared
+  primitives (`Card`, `Field`, `StatusPill`, `ErrorBanner`, ...)
+- `lib/api.ts` — typed fetch wrapper; one function per backend route, no
+  business logic
+- `lib/usePoll.ts` — the app's only "framework": polls a fetch function on
+  an interval with manual refetch, used instead of a websocket/SSE layer
+- `lib/types.ts` — response types mirroring the backend's JSON shapes

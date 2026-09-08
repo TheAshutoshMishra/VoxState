@@ -19,8 +19,8 @@ of truth for how components relate, not this file.
 
 ## Current status
 
-**M7 — Voice Interruption & Recovery is complete** (M0–M6 also complete).
-**M8 = NOT STARTED, M9 = NOT STARTED.**
+**M9 — Testing, Benchmarking & Demo is complete** (M0–M8 also complete).
+This is the final milestone; there is no M10.
 `internal/agent` orchestrates the full tool-calling loop end to end: read
 current machine state → `Planner` selects a tool → `internal/tasks.CreateTask`
 binds a task to that current version → `internal/tools.Tool.Run`
@@ -608,9 +608,22 @@ package), following standard Go convention — the `backend/tests/`
 directory from the M0 scaffold is reserved for later integration/e2e tests
 (likely M9), not unit tests.
 
-No linter or frontend tooling exists yet — introduced in later milestones
-(frontend tooling in M8). Do not add tooling ahead of the milestone that
-needs it.
+```bash
+cd frontend
+npm install
+npm run dev       # http://localhost:3000, talks to NEXT_PUBLIC_API_URL
+                   #   (defaults to http://localhost:8080 — see .env.example)
+npm run build      # production build (Next.js + TypeScript type-check)
+npm run lint        # eslint
+npm test             # vitest run (component-level unit tests, jsdom)
+
+# Backend without libopus/pkg-config installed (see the environment note
+# above): cmd/devserver wires the exact same router/state/policy/agent
+# stack as cmd/server but with in-memory LiveKit/Rime/Deepgram fakes, so
+# the M8 frontend's non-voice panels can be developed and demoed against
+# real backend responses without the cgo build requirement.
+cd backend && go run ./cmd/devserver
+```
 
 ## Milestone log
 
@@ -899,3 +912,138 @@ about. Keep entries short — detail belongs in `docs/` and commit history.
   persistence, no production-grade VAD, and no LLM provider was added —
   M8 introduces the frontend visualization of everything M2–M7 already
   produce; M9 adds end-to-end benchmarking and the rehearsed demo script.
+- **M8 (done):** Next.js/React/TypeScript dashboard in `frontend/`
+  (App Router, Tailwind v4, no state-management library — `usePoll`, a
+  ~40-line hook, is the only "framework" the UI has) consuming the
+  existing M0–M7 backend exactly as-is: zero backend route signatures
+  changed. One panel per required surface — `MachinePanel` (state +
+  version + change-state form), `StateTimeline` (fetches every historical
+  version 1..current via the existing per-version `GET .../state?version=N`
+  endpoint and renders it oldest-first — there is no "list all versions"
+  endpoint, so the timeline is N sequential fetches, fine at demo scale),
+  `TaskPanel` (create/start/cancel, bound-version vs current-version
+  shown side by side with a MATCH/STALE pill), `PolicyPanel` (manual
+  "evaluate a task's result" control, a "run agent" control, and a
+  one-click **Guided Stale-Result Demo** button that reproduces the
+  project's flagship scenario end to end — create a task at v*N*, bump
+  the machine to v*N*+1 via a nonce'd attribute change so the version
+  bump is guaranteed even on repeat runs, then submit that task's result
+  and show the backend's own REJECTED verdict), and `VoicePanel` (starts
+  a real session via `POST .../voice/sessions`, connects with
+  `livekit-client`, and derives a per-turn ACTIVE/INTERRUPTED/COMPLETED
+  list by reducing this session's `turn_*` activity-log lines — exported
+  as `deriveTurns` and covered by `VoicePanel.test.tsx`, the frontend's
+  first unit test). **Backend authority, enforced structurally, not just
+  by convention:** the frontend contains no `===`/`!==` comparison of a
+  bound version against a current version anywhere that produces an
+  ACCEPTED/REJECTED verdict — `PolicyPanel` only ever displays
+  `decision.outcome` exactly as `POST /tasks/{id}/result` returned it;
+  the one client-side version comparison that does exist (`TaskPanel`'s
+  MATCH/STALE pill) is a passive display hint over two numbers the
+  backend already returned, not a policy decision, and never gates
+  anything. This is documented as the explicit contract in
+  `docs/ARCHITECTURE.md`'s new "M8: backend authority" note, which
+  `frontend/lib/api.ts`'s file header points back to. Added one small,
+  additive backend piece to make background-goroutine events (task
+  lifecycle, M7 voice turn events) visible without a database: `internal
+  /activity`, a bounded in-memory ring buffer implemented as an
+  `slog.Handler` wrapper that taps the exact log lines `tasks.Store` and
+  `voice.VoiceSession` already emit — no existing package's code or
+  method signatures changed to support it — plus one new endpoint,
+  `GET /activity`. `MachineCreated`/`MachineStateChanged`/
+  `TechnicianReported`/`ToolResultRejected` are deliberately *not*
+  captured by this ring buffer, since `state.Store`/`policy.Evaluator`
+  don't log at all by design (see M2/M4 notes above); the frontend
+  instead reads those directly from the HTTP response body of the
+  request that produced them (every handler already returns the event
+  inline), and `ActivityStream` merges both sources client-side. Added
+  `cmd/devserver`, a second binary wiring the identical router/state/
+  policy/agent stack as `cmd/server` but with in-memory LiveKit/Rime/
+  Deepgram fakes in place of the real providers, so the frontend could be
+  built and manually verified end to end (including a live curl-driven
+  replay of the create-task → bump-version → stale-result → REJECTED
+  flow through `cmd/devserver` — task bound to v1, machine bumped to v2,
+  result correctly `REJECTED` with `"reason":"result bound to state
+  version 1, but machine is now at version 2: result is stale"`) on a
+  machine without `libopus`/`pkg-config` or real voice credentials —
+  `cmd/server` itself is unchanged and still requires them. Accessibility:
+  every `StatusPill` pairs a symbol with its color (WCAG 1.4.1 — color
+  alone never carries the ACCEPTED/REJECTED distinction), and
+  `ErrorBanner`/`BackendStatus` use `role="alert"`/`role="status"`.
+  Verified: `npx tsc --noEmit` (clean), `npm run build` (Next.js
+  production build succeeds), `npx eslint .` (clean), `npm test`
+  (6 passing `deriveTurns` unit tests), and on the backend, `gofmt -l .`
+  (clean), `go vet` and `go test ./...` for every package except
+  `internal/voice/livekit`/`cmd/server` (same pre-existing `libopus`/
+  `pkg-config` environment limitation as M6/M7, unrelated to this
+  milestone's changes — `internal/activity`, `internal/api`, and every
+  other package build and test cleanly, and `cmd/devserver` itself
+  builds and was run directly). Updated `docs/ARCHITECTURE.md` (Frontend
+  component section rewritten, new "M8: backend authority" note),
+  `docs/ROADMAP.md` (M8 objective annotated with implementation
+  decisions), `README.md` (frontend status, stack table, project
+  structure), and `frontend/README.md` (replaced the `create-next-app`
+  boilerplate with VoxState-specific setup/run instructions). No backend
+  domain logic changed, no new backend third-party dependencies, no
+  database/event persistence added (still in-memory, same as every
+  engine since M2) — M9 adds end-to-end benchmarking, race-test hardening
+  passes, `RIME_EVIDENCE.md`, and the rehearsed demo script.
+- **M9 (done, final milestone):** Hardening/benchmarking/evidence pass —
+  zero product features added, per the milestone's own scope boundary.
+  Re-verified the two core flows live, not just via existing unit tests:
+  ran `cmd/devserver` and drove the stale-result scenario
+  (task bound v1 → machine bumped to v2 → stale result submitted →
+  `REJECTED`) and the agent-level fresh-vs-stale scenario (3s tool delay,
+  state changed mid-flight → `REJECTED`, `replan_required: true`, **no
+  `payload` field at all**; state left alone → `ACCEPTED` with payload)
+  directly over HTTP. Ran `go test -race` across every package that
+  builds in this environment, then repeated-run stress passes
+  (`-count=20` on `state`/`tasks`/`policy`/`agent`, `-count=30-50` on
+  `voice`) specifically to catch intermittent races a single run
+  wouldn't. That stress pass **found one genuine flake**:
+  `TestInterrupt_RapidDoubleInterruption` (`internal/voice/
+  interruption_test.go`) intermittently asserted a just-interrupted
+  turn's task was `CANCELLED` before the goroutine responsible for that
+  transition (`agent.Run`'s `runTool`, which calls `tasks.Store
+  .CancelTask` itself on `ctx.Done()` — see `agent.go`) had actually run;
+  the test synchronized on the *next* turn's TTS call, which has no
+  ordering guarantee relative to the *previous* turn's cancellation
+  goroutine. Confirmed via source reading that this is a test-
+  synchronization gap, not a production correctness bug — the actual
+  guarantee under test (stale content never reaches TTS) held in every
+  run, independently verified by that same test's TTS-content
+  assertions. Fixed by waiting for the task's status to leave `RUNNING`
+  before asserting on it, the same pattern the rest of the suite already
+  uses; re-verified stable at 50/50 repeated `-race` runs after the fix.
+  Added three new benchmark files (`internal/policy/
+  evaluator_bench_test.go`, `internal/tasks/store_bench_test.go`,
+  `internal/voice/latency_bench_test.go`, all `_test.go` — zero
+  production code changes) measuring policy-decision cost (accepted:
+  311 ns/op; rejected-stale: 4812 ns/op — slower because rejection
+  constructs a real `events.Event`), task create/cancel latency (58.9 µs
+  / 20.6 µs), and the two real async interruption latencies
+  (interrupt→`StopAudio`, interrupt→task-actually-`CANCELLED`, both
+  ~150-250 µs on this hardware) — see `BENCHMARKS.md` for the full
+  numbers and how to reproduce them; nothing there is invented, and
+  network-bound metrics (real Rime/LiveKit/Deepgram latency) are
+  explicitly marked not-measured rather than guessed. Added
+  `RIME_EVIDENCE.md`, reading every value (model ID `coda`, speaker
+  `astra`, endpoint, sample rate 24000, audio format) directly from
+  `internal/voice/rime`/`internal/config`/`.env.example` rather than
+  inventing any — and found and honestly disclosed one real gap in the
+  process: `rime.Config.Lang` is never actually set anywhere `rime
+  .Config` is constructed (`cmd/server/main.go`), so language is
+  whatever Rime's server-side default is, not the `"eng"` an older code
+  comment used only as an illustrative example. No live Rime/LiveKit/
+  Deepgram call was made in this environment (no credentials
+  configured) — disclosed explicitly rather than claimed. Added
+  `DEMO.md` (the 12-step rehearsed demo script) and `BENCHMARKS.md`.
+  Expanded `README.md` with the Setup/Running, Environment Variables,
+  Third-Party Services, Testing, Demo, and Limitations & Failure
+  Behavior sections it was missing. Verified: `gofmt -l .` (clean),
+  `go vet`/`go build`/`go test`/`go test -race` all pass for every
+  package except `internal/voice/livekit`/`cmd/server` (same
+  pre-existing `libopus`/`pkg-config` environment limitation as M6-M8,
+  confirmed still true, not re-attempted-and-glossed-over); frontend
+  `npx tsc --noEmit`, `npm run build`, `npx eslint .`, and `npm test`
+  (6 tests) all pass. This is the final milestone — no M10 exists.

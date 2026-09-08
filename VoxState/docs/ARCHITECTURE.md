@@ -1,8 +1,9 @@
 # VoxState Architecture
 
-Status: M0 — Foundation. This document describes the target architecture for the
-system as a whole. Components described here are **not yet implemented** unless
-explicitly noted; implementation begins at M1.
+Status: M0–M9 complete (final milestone). This document describes the target
+architecture for the system as a whole. Components described here are **not
+yet implemented** unless explicitly noted as Implemented — see `CLAUDE.md`'s
+"Current status" and milestone log for exactly what that covers.
 
 ## 1. The problem this architecture serves
 
@@ -30,10 +31,13 @@ structurally hard to hit, not just handled by convention.
                               ┌─────────────────────────┐
                               │        Frontend          │
                               │   (Next.js / React / TS) │
-                              │  state timeline, events, │
-                              │  machine dashboard        │
+                              │  state timeline, tasks,  │
+                              │  policy, voice, activity │
                               └────────────▲──────────────┘
-                                           │ REST/WS (read + observe)
+                                           │ REST (read + demo controls;
+                                           │ LiveKit media connects directly
+                                           │ to the LiveKit room, not through
+                                           │ this backend)
                                            │
 ┌───────────────────────────────────────────────────────────────────────┐
 │                         Go Backend (modular monolith)                  │
@@ -85,11 +89,11 @@ structurally hard to hit, not just handled by convention.
 ## 3. Components and responsibilities
 
 ### API / Session layer (`internal/api`)
-Entry point for the frontend (REST, not yet built) and, as of M6, for
-minting/ending voice sessions (`POST /machines/{id}/voice/sessions`,
-`GET`/`POST /voice/sessions/{id}...`) — delegates all session lifecycle to
-`internal/voice.Manager`. Contains no business logic itself, matching
-every other handler group in the package.
+Entry point for the frontend (REST — this is exactly what `frontend/lib/api.ts`
+consumes, see M8) and, as of M6, for minting/ending voice sessions
+(`POST /machines/{id}/voice/sessions`, `GET`/`POST /voice/sessions/{id}...`)
+— delegates all session lifecycle to `internal/voice.Manager`. Contains no
+business logic itself, matching every other handler group in the package.
 
 ### State Engine (`internal/state`)
 Owns the current `MachineState` and its version number per machine. Every
@@ -204,9 +208,38 @@ not the value requested, so a mismatch between what was asked for and
 what Rime actually produced can never silently propagate downstream.
 
 ### Frontend (Next.js/React/TS)
-Read-only observability surface for the demo: shows machine state, the event
-timeline, active/cancelled tasks, and rejected results as they happen. Does
-not participate in the correctness guarantees — it's a window into them.
+**Implemented (M8)** in `frontend/`. A control surface, not a read-only
+viewer: it both displays machine state/versions/tasks/policy
+decisions/voice sessions/activity and drives the backend through its
+existing HTTP API (create/select a machine, change state, create/start/
+cancel a task, run the agent, start/end a voice session) — a demo needs
+to *cause* a version bump and a stale result, not just watch one that
+already happened. One panel per concern: `MachinePanel` (current state +
+version + change-state form), `StateTimeline` (every historical version,
+oldest-first), `TaskPanel` (task list with a bound-version-vs-current
+MATCH/STALE indicator), `PolicyPanel` (manual result evaluation, a "run
+agent" control, and a one-click guided reproduction of the flagship
+stale-result scenario), `VoicePanel` (real `livekit-client` session
+connected via `POST /machines/{id}/voice/sessions`, with a derived
+ACTIVE/INTERRUPTED/COMPLETED list per turn), and `ActivityStream` (a
+merged, newest-first feed of backend events). Polling (`usePoll`, ~1s for
+per-machine panels) keeps every panel current without adding a
+websocket/SSE layer this milestone doesn't need.
+
+**M8: backend authority.** The frontend must never become a second,
+possibly-inconsistent implementation of the version-fencing check that
+`policy.Evaluator` (M4) owns. Concretely: no frontend code compares a
+task's bound version against a machine's current version to produce an
+ACCEPTED/REJECTED verdict — `PolicyPanel` only ever renders
+`decision.outcome` exactly as `POST /tasks/{id}/result` returned it, and
+`agentResult.outcome` exactly as `POST /machines/{id}/agent/run`
+returned it. `TaskPanel`'s bound-vs-current MATCH/STALE pill is the one
+place the frontend does compare two version numbers itself, but it is a
+passive display hint (the same two numbers the backend already returned
+in that task's response), never a gate on what the UI does next. This
+boundary is why `frontend/lib/api.ts` contains no business logic: every
+function in it is a typed pass-through to one backend route, returning
+exactly what the backend responded with.
 
 ### PostgreSQL
 Durable storage for events, state versions, tasks, and tool results. Chosen

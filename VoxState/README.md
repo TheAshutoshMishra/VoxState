@@ -1,10 +1,10 @@
 # VoxState
 
-> **Status: in development — Milestone 7 (Voice Interruption & Recovery) is
-> complete.** M0–M7 are implemented; see `docs/ROADMAP.md` and
+> **Status: in development — Milestone 8 (Frontend & Visualization) is
+> complete.** M0–M8 are implemented; see `docs/ROADMAP.md` and
 > `CLAUDE.md`'s "Current status" section for exactly what that does and
-> does not cover. The frontend (M8) and a real LLM provider are not built
-> yet.
+> does not cover. A real LLM provider is not wired in yet (a deterministic
+> keyword planner stands in for it — see `internal/agent`).
 
 A realtime voice agent that stays consistent with the latest verified world
 state — even when the user interrupts, external events change that state
@@ -69,8 +69,8 @@ LiveKit (voice) ⇄ Go backend (modular monolith) ⇄ PostgreSQL (state/events)
                         ├─ Policy layer (stale-result rejection)
                         └─ Event Store (append-only history)
                         │
-                Next.js/React frontend (read-only observability:
-                state timeline, task status, rejected results)
+                Next.js/React frontend (control surface: machine/state/
+                task/policy/voice panels, demo controls, activity stream)
 ```
 
 Full detail: `docs/ARCHITECTURE.md`. Entity definitions: `docs/DOMAIN_MODEL.md`.
@@ -81,7 +81,7 @@ Event catalog: `docs/EVENT_MODEL.md`.
 - **Backend:** Go (modular monolith — see `docs/decisions/001-modular-monolith.md`)
 - **Persistence:** PostgreSQL (Redis only if a later milestone proves a
   concrete need) — not added yet; still in-memory
-- **Frontend:** Next.js + React + TypeScript — not built yet (M8)
+- **Frontend:** Next.js + React + TypeScript — implemented (M8)
 - **Realtime voice transport:** LiveKit — implemented (M6); the Go
   backend joins rooms as a raw participant, since LiveKit's Agents
   framework has no Go support
@@ -93,34 +93,36 @@ Event catalog: `docs/EVENT_MODEL.md`.
 
 ## Current milestone
 
-**M7 — Voice Interruption & Recovery.** `internal/voice.VoiceSession` now
-recognizes every instruction as a logical **turn**: Run's frame loop keeps
-consuming inbound audio while a turn is being processed/spoken, and a
-loud frame arriving while a turn is active is treated as a barge-in — the
-active turn's context is cancelled (propagating into `agent.Run`/
-`tasks.Store` exactly like any other cancellation already did in M6),
-`Transport.StopAudio` discards any audio already queued for playback, and
-the same frame starts accumulating the interrupting utterance as the new,
-authoritative turn. See `docs/ARCHITECTURE.md`'s voice-flow section and
-`CLAUDE.md`'s M7 design notes for the full turn lifecycle and the races
-this closes. Talking over the agent now reliably cuts it off instead of
-being silently dropped.
+**M8 — Frontend & Visualization.** A Next.js/React/TypeScript dashboard
+in `frontend/` makes every M2–M7 mechanic visible and operable: machine
+state + version, a full state-version timeline, tasks with a bound-vs-
+current-version indicator, a policy panel that renders the backend's own
+ACCEPTED/REJECTED verdicts (including a one-click reproduction of the
+stale-result scenario below), a real LiveKit-connected voice panel with
+per-turn ACTIVE/INTERRUPTED/COMPLETED status, and a merged activity
+stream. The frontend contains no copy of the version-fencing check — see
+`docs/ARCHITECTURE.md`'s "M8: backend authority" note. A small additive
+backend piece, `internal/activity` (`GET /activity`), surfaces
+background-goroutine events (task lifecycle, M7 voice turns) that have
+no HTTP request to ride along on. See `docs/ROADMAP.md` and `CLAUDE.md`'s
+M8 entry for the full breakdown.
 
 See `docs/ROADMAP.md` for the full milestone breakdown (M0–M9) and
 `CLAUDE.md` for exact per-milestone status and design notes.
 
-## How this will eventually be demonstrated
+## How this is demonstrated
 
 A live voice conversation with the agent about a simulated machine fleet:
 the user asks for a diagnosis, the agent starts work, the demo operator
 triggers a state change (via the frontend or a script) mid-diagnostic, and
-the user interrupts. The frontend timeline (M8, not built yet) will show
-the state version bump, the task cancellation, and the rejected stale
-result in realtime, alongside the agent's spoken (Rime) response
-reflecting only current state. As of M7, every piece of that flow except
-the frontend visualization is demonstrable end to end: interrupting the
-agent mid-response now cancels its in-flight work and cuts off its audio
-immediately.
+the user interrupts. The frontend (`frontend/`) shows the state version
+bump, the task cancellation, and the rejected stale result in realtime —
+including a one-click guided replay of that exact scenario in
+`PolicyPanel` — alongside the agent's spoken (Rime) response reflecting
+only current state. Every piece of that flow is demonstrable end to end
+as of M8: interrupting the agent mid-response cancels its in-flight work
+and cuts off its audio immediately, and the frontend makes all of it
+visible without reading logs.
 
 ## Project structure
 
@@ -139,9 +141,121 @@ voxstate/
 │   │   └── voice/     # M6: LiveKit/Rime/Deepgram voice adapter around Agent
 │   ├── migrations/
 │   └── tests/
-├── frontend/          # Next.js/React/TS observability UI
+├── frontend/          # Next.js/React/TS control surface (M8)
 ├── docs/              # architecture, domain model, event model, ADRs, roadmap
 ├── scripts/
 ├── docker/
 └── docker-compose.yml
 ```
+
+## Setup & running
+
+```bash
+# Backend
+cd backend
+cp ../.env.example ../.env   # fill in real LiveKit/Rime/Deepgram values, or leave blank
+go run ./cmd/server            # requires libopus/pkg-config (see Limitations) and,
+                                #   for the voice endpoints, real LIVEKIT_*/RIME_*/DEEPGRAM_* values
+# — or, without libopus/pkg-config or real voice credentials —
+go run ./cmd/devserver         # identical HTTP API; LiveKit/Rime/Deepgram replaced
+                                #   with in-memory fakes (no real audio)
+
+# Frontend (separate terminal)
+cd frontend
+npm install
+cp .env.example .env.local     # NEXT_PUBLIC_API_URL, defaults to http://localhost:8080
+npm run dev                    # http://localhost:3000
+```
+
+`docker compose up -d postgres` starts the only service currently defined
+in `docker-compose.yml`; nothing in the codebase talks to it yet (see
+Persistence, below) — it is not required to run either binary above.
+
+## Environment variables
+
+See `.env.example` (backend) and `frontend/.env.example` for the full,
+current list with working local defaults. Summary:
+
+| Variable | Required for | Notes |
+|---|---|---|
+| `HTTP_HOST`/`HTTP_PORT` | backend HTTP server | defaults `0.0.0.0`/`8080` |
+| `APP_ENV` | backend | default `development` |
+| `DATABASE_URL` | nothing yet | Postgres is provisioned by `docker-compose.yml` but unused by any Go code — see Limitations |
+| `LIVEKIT_URL`/`LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET` | real voice sessions (`cmd/server`) | blank works with `cmd/devserver` |
+| `RIME_API_KEY` | real TTS | `RIME_MODEL_ID`/`RIME_SPEAKER`/`RIME_SAMPLE_RATE_HZ` have working defaults (`coda`/`astra`/`24000`) if unset — see `RIME_EVIDENCE.md` |
+| `DEEPGRAM_API_KEY` | real STT | required for `cmd/server`'s voice path |
+| `LLM_API_KEY` | nothing yet | reserved; `internal/agent` uses a deterministic keyword planner, no LLM call exists |
+| `NEXT_PUBLIC_API_URL` | frontend | default `http://localhost:8080` |
+
+## Third-party services
+
+- **LiveKit** — realtime audio transport. The Go backend joins LiveKit
+  rooms directly as a raw participant via `server-sdk-go/v2`'s
+  `pkg/media` (no Go support exists for LiveKit's Agents framework).
+  Requires `libopus`/`pkg-config` on the build machine (a cgo dependency
+  of that SDK) — see Limitations.
+- **Rime** — text-to-speech, called exactly once per voice turn, only
+  after that turn's response has passed the Policy staleness check. See
+  `RIME_EVIDENCE.md` for the full, source-verified configuration,
+  acceptance test, and honestly-disclosed limitations (no live API call
+  has been made in this development environment).
+- **Deepgram** — speech-to-text, official `deepgram-go-sdk/v3`,
+  prerecorded REST endpoint called once per locally-segmented utterance.
+
+## Testing
+
+```bash
+cd backend
+gofmt -l .            # should print nothing
+go vet ./...           # excluding internal/voice/livekit and cmd/server
+                        #   without libopus/pkg-config — see Limitations
+go test ./...
+go test -race ./...
+go test -race -count=20 ./internal/state/... ./internal/tasks/... \
+  ./internal/policy/... ./internal/agent/... ./internal/voice/...
+go test -run '^$' -bench . ./internal/policy/... ./internal/tasks/... ./internal/voice/...
+
+cd ../frontend
+npx tsc --noEmit
+npm run build
+npx eslint .
+npm test
+```
+
+## Demo
+
+See `DEMO.md` for a rehearsed, 4-5 minute walkthrough of both core
+scenarios (stale-result rejection, voice interruption) with exact UI
+steps and equivalent `curl`/`go test` commands for a non-UI or no-voice-
+credentials run-through.
+
+## Limitations & failure behavior
+
+- **`internal/voice/livekit` and `cmd/server` require `libopus` and
+  `pkg-config`** on the build machine (a cgo dependency pulled in by
+  `server-sdk-go/v2/pkg/media`'s Opus encode/decode). Every other
+  package, including `internal/voice`'s own core logic, builds and tests
+  without them. `cmd/devserver` exists specifically to develop and
+  demo everything except real LiveKit audio without this dependency.
+- **No database.** `DATABASE_URL`/PostgreSQL are provisioned in
+  `docker-compose.yml` but no Go code opens a connection — `state.Store`,
+  `tasks.Store`, `voice.Manager`, and `internal/activity` are all
+  in-memory only. Restarting the backend loses all machines/tasks/history.
+- **No real LLM.** `internal/agent.KeywordPlanner` is a deterministic
+  keyword matcher, not a language model — see `internal/agent`'s doc
+  comment for exactly which phrases it recognizes.
+- **Rime has no fallback.** If a `Synthesize` call fails (bad key,
+  network error, malformed response), that voice turn ends with no
+  spoken output and no retry — see `RIME_EVIDENCE.md` §15.
+- **No live Rime/LiveKit/Deepgram call has been exercised in this
+  development environment** — no API credentials are configured here.
+  Every claim above about these integrations is verified by reading the
+  actual client code and running it against fakes/mocks, not against the
+  real services; see `RIME_EVIDENCE.md`'s Limitations section for the
+  precise boundary of what was and wasn't tested.
+- **A true simultaneous tie** between "a tool finished" and "the user
+  interrupted" is not guaranteed to always resolve the same way — see
+  `TestRace_InterruptVsToolCompletion`'s doc comment in
+  `internal/voice/interruption_test.go`. What is guaranteed: no data
+  race, no panic, and the task engine always reaches exactly one
+  consistent terminal state.

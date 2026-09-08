@@ -126,13 +126,48 @@ ambient noise or false positives.
 **Objective:** Next.js/React frontend showing machine state, live event
 timeline, active/cancelled tasks, and rejected results, so the mechanics
 from M2–M7 are visible to an audience in realtime, not just in logs.
-**Not built yet:** Any new backend capability — this milestone consumes
-what already exists.
+**Decisions made during implementation:** the frontend became a real
+control surface, not just a read-only viewer — every panel (machine,
+state timeline, tasks, policy, voice, activity) both displays backend
+state and drives it through the existing HTTP API, since a click-through
+demo needs to *cause* the version bump and stale result, not just
+observe one that already happened. `PolicyPanel` never recomputes
+ACCEPTED/REJECTED itself; it only renders whatever `POST
+/tasks/{id}/result` returns, and includes a one-click "Guided Stale-
+Result Demo" that reproduces the project's core scenario end to end. A
+small additive backend piece, `internal/activity` (a bounded in-memory
+ring buffer wrapping the shared `*slog.Logger`), plus `GET /activity`,
+was added so background-goroutine events (task lifecycle, M7 voice turn
+events) that have no HTTP caller to hand them to are still visible to
+the frontend — no existing package's method signatures changed. A second
+binary, `cmd/devserver`, wires the identical stack as `cmd/server` with
+in-memory LiveKit/Rime/Deepgram fakes so the frontend is developable and
+demoable without `libopus`/`pkg-config` or real voice credentials.
+See `CLAUDE.md`'s M8 entry for the full breakdown.
+**Not built yet:** Any change to backend domain logic (state/task/policy
+engines untouched) or database/event persistence (still in-memory) —
+this milestone consumes what already exists and adds one small, additive
+observability seam (`internal/activity`) to expose it.
 
 ## M9 — Testing, Benchmarking & Demo
 **Objective:** End-to-end test coverage of the stale-result and
 interruption flows, basic latency/timing benchmarks for the
 interrupt→cancel→replan loop, and a rehearsed demo script covering the
 scenario in the project brief (Machine 17 example).
+**Decisions made during implementation:** a repeated-run stress pass
+(`go test -race -count=20..50`) on the concurrency-critical packages
+found one genuine test flake, `TestInterrupt_RapidDoubleInterruption` —
+root-caused to a missing wait for an async task-cancellation goroutine,
+not a production bug — fixed in place rather than papered over. Added
+three `_test.go`-only benchmark files (`internal/policy`, `internal/tasks`,
+`internal/voice`) measuring what's actually measurable locally (policy
+decision cost, task create/cancel latency, interrupt→StopAudio and
+interrupt→task-cancelled latency); real network-bound metrics (Rime/
+LiveKit/Deepgram) are explicitly marked not-measured in `BENCHMARKS.md`
+rather than estimated. `RIME_EVIDENCE.md` documents the Rime integration
+from actual source values and discloses one real gap found in the
+process (`rime.Config.Lang` is never set). `DEMO.md` is the rehearsed
+demo script. See `CLAUDE.md`'s M9 entry for the full breakdown.
 **Not built yet:** N/A — this milestone hardens and demonstrates what
-exists; no new product surface is introduced.
+exists; no new product surface is introduced. This is the final
+milestone (no M10).
