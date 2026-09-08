@@ -66,7 +66,30 @@
       "Bash(grep -rInE \"sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN \\(RSA|EC|OPENSSH|PRIVATE\\)\" -r . --include=\"*.go\" --include=\"*.ts\" --include=\"*.tsx\" --include=\"*.md\" --include=\"*.env*\" --include=\"*.json\" --include=\"*.yml\")",
       "Bash(kill 14630)",
       "Bash(kill 14658)",
-      "Bash(kill -9 25011)"
+      "Bash(kill -9 25011)",
+      "Bash(xargs -I{} sh -c 'file \"{}\" | grep -q \"ELF 64-bit\" && echo \"{}\"')",
+      "Bash(nohup npm run dev)",
+      "Bash(echo \"frontend PID: $!\")",
+      "Bash(curl -s -o /dev/null -w \"frontend HTTP status: %{http_code}\\\\n\" http://localhost:3000)",
+      "Bash(curl -s -o /dev/null -w \"backend: %{http_code}\\\\n\" http://localhost:8080/health)",
+      "Bash(curl -s -o /dev/null -w \"frontend: %{http_code}\\\\n\" http://localhost:3000)",
+      "Bash(grep -n \"^\\\\.env$\" .gitignore)",
+      "Bash(dpkg -l libopus-dev)",
+      "Bash(dpkg -l pkg-config)",
+      "Bash(dpkg -L pkg-config)",
+      "Bash(dpkg -l pkgconf)",
+      "Bash(dpkg -L pkgconf)",
+      "Read(//usr/bin/**)",
+      "Bash(/usr/bin/pkg-config --version)",
+      "Bash(dpkg *)",
+      "Bash(kill -9 29093)",
+      "Bash(curl -s -X POST http://localhost:8080/machines -d '{\"id\":\"machine-real\",\"name\":\"Real Server Test\"}')",
+      "Bash(curl -s -X POST http://localhost:8080/machines/machine-real/voice/sessions -d '{\"user_id\":\"test-user\"}')",
+      "Bash(curl -s -w \"\\\\nHTTP_STATUS:%{http_code}\\\\n\" -X POST http://localhost:8080/machines/machine-real/voice/sessions -d '{\"user_id\":\"test-user\"}')",
+      "Bash(curl -s -o /dev/null -w \"health status: %{http_code}\\\\n\" http://localhost:8080/health)",
+      "Bash(kill -9 44186 44048)",
+      "Bash(curl *)",
+      "Bash(grep -E \"cmd/server$|next dev|next-server\")"
     ]
   }
 }

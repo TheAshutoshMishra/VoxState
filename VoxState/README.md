@@ -151,20 +151,30 @@ voxstate/
 ## Setup & running
 
 ```bash
-# Backend
+# Backend — internal/config reads real OS environment variables only
+# (no .env auto-loading exists, by design — see internal/config/config.go's
+# doc comment). .env.example is a copy-able reference, not something the
+# Go binary reads automatically.
 cd backend
-cp ../.env.example ../.env   # fill in real LiveKit/Rime/Deepgram values, or leave blank
-go run ./cmd/server            # requires libopus/pkg-config (see Limitations) and,
-                                #   for the voice endpoints, real LIVEKIT_*/RIME_*/DEEPGRAM_* values
+go run ./cmd/server             # sensible defaults for everything except
+                                 #   LiveKit/Rime/Deepgram credentials (blank
+                                 #   -> those endpoints error at call time);
+                                 #   requires libopus/pkg-config (see Limitations)
 # — or, without libopus/pkg-config or real voice credentials —
-go run ./cmd/devserver         # identical HTTP API; LiveKit/Rime/Deepgram replaced
-                                #   with in-memory fakes (no real audio)
+go run ./cmd/devserver          # identical HTTP API; LiveKit/Rime/Deepgram replaced
+                                 #   with in-memory fakes (no real audio)
 
-# Frontend (separate terminal)
+# To actually exercise the voice endpoints against real providers, export
+# real values first (see .env.example for the full list), e.g.:
+#   export LIVEKIT_URL=... LIVEKIT_API_KEY=... LIVEKIT_API_SECRET=... \
+#          RIME_API_KEY=... DEEPGRAM_API_KEY=...
+#   go run ./cmd/server
+
+# Frontend (separate terminal) — Next.js DOES auto-load .env.local
 cd frontend
 npm install
-cp .env.example .env.local     # NEXT_PUBLIC_API_URL, defaults to http://localhost:8080
-npm run dev                    # http://localhost:3000
+cp .env.example .env.local      # NEXT_PUBLIC_API_URL, defaults to http://localhost:8080
+npm run dev                     # http://localhost:3000
 ```
 
 `docker compose up -d postgres` starts the only service currently defined

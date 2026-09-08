@@ -74,3 +74,19 @@ func TestTranscribe_EmptyResultsReturnsEmptyString(t *testing.T) {
 		t.Errorf("Transcribe() = %q, want empty string for no channels/alternatives", text)
 	}
 }
+
+// TestNewSTT_DoesNotPanicWithNilOptions exercises the actual exported
+// constructor cmd/server calls (NewSTT(apiKey) -> newSTT(apiKey, nil)),
+// which every other test in this file bypasses by always supplying a
+// non-nil *interfaces.ClientOptions override for the Host field. That
+// gap let a real nil-pointer panic reach production undetected: the
+// SDK's rest.New does `options.APIKey = apiKey` on whatever pointer
+// it's given with no nil check of its own (see newSTT's doc comment).
+// Found by actually running cmd/server against a real (if fake-valued)
+// DEEPGRAM_API_KEY and hitting POST /machines/{id}/voice/sessions.
+func TestNewSTT_DoesNotPanicWithNilOptions(t *testing.T) {
+	stt := NewSTT("some-api-key")
+	if stt == nil {
+		t.Fatal("NewSTT() = nil")
+	}
+}

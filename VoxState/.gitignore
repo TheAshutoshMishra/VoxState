@@ -6,6 +6,8 @@
 # --- Go ---
 /backend/bin/
 /backend/*.test
+/backend/server
+/backend/devserver
 *.out
 vendor/
 

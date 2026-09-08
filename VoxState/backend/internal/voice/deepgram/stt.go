@@ -50,8 +50,19 @@ func NewSTT(apiKey string) *STT {
 
 // newSTT is the shared constructor; opts is exposed only to
 // stt_test.go (via the Host override) so tests can point this client at
-// an httptest.Server instead of making a live network call.
+// an httptest.Server instead of making a live network call. opts must
+// never be nil going into listen.NewREST: the SDK's underlying
+// rest.New (pkg/client/listen/v1/rest/client.go) does
+// `options.APIKey = apiKey` on whatever pointer it's given with no nil
+// check — confirmed by reading the SDK source after this crashed with a
+// nil-pointer panic against a real API key (NewSTT's own tests never
+// caught it, since they always pass a non-nil override for the Host
+// field to point at an httptest.Server; only NewSTT's real, unexercised
+// path ever passed nil).
 func newSTT(apiKey string, opts *interfaces.ClientOptions) *STT {
+	if opts == nil {
+		opts = &interfaces.ClientOptions{}
+	}
 	client := listen.NewREST(apiKey, opts)
 	return &STT{client: restapi.New(client)}
 }
